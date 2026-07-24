@@ -3,110 +3,141 @@ import json
 import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
+import sqlitecloud
 
 # ============ FLASK APP ============
 app = Flask(__name__)
 
 # ============ CONFIGURATION ============
 BOT_TOKEN = "8958327625:AAE6B5kypZyXEFDaEx93FgT1nzyVR_6l_Fc"
-TURSO_URL = "https://credittracker-introspection-cyberark.aws-ap-south-1.turso.io"
-TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODQ5MTI2OTEsImlkIjoiMDE5Zjk1MTYtMGUwMS03NmE2LTljZGYtOWI1MmI2OTlhMmMzIiwia2lkIjoiRTczUXltTjBjNFp4ZEhWdENSeXpBSzI4cmN6aUNya3c4aG03cjFQNU1GVSIsInJpZCI6ImJkYWQ3Y2RiLWY2MTYtNDYzMy1hZGVjLThlZWVlYTQxN2JlOCJ9.-MdzoO--wtvnCoZIXplgLrzjj7cl8eT_DNT-87cSSXaUGi1aGyzGo3lPKTPWzI4gKMLGDoMy61rIfz_qvPanAQ"
 
-# ============ TURSO HTTP API FUNCTIONS ============
-def turso_query(sql, params=None):
-    """Execute a SQL query on Turso via HTTP API"""
-    url = f"{TURSO_URL}/v1/query"
-    headers = {
-        "Authorization": f"Bearer {TURSO_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "sql": sql,
-        "args": params if params else []
-    }
+# SQLite Cloud Connection
+SQLITE_CLOUD_URL = "sqlitecloud://ctv0adtedz.g6.sqlite.cloud:8860/auth.sqlitecloud?apikey=LapaWymijCaGztdjyip2yyH62DgGHVWaj8mvQ1378WE"
+
+# ============ DATABASE FUNCTIONS ============
+def get_connection():
+    """Get SQLite Cloud connection"""
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"Turso error: {response.status_code} - {response.text}")
-            return None
+        conn = sqlitecloud.connect(SQLITE_CLOUD_URL)
+        return conn
     except Exception as e:
-        print(f"Turso request error: {e}")
+        print(f"Connection error: {e}")
         return None
 
 def init_database():
     """Create the clients table if it doesn't exist"""
-    sql = """
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            amount REAL DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-    result = turso_query(sql)
-    if result is not None:
+    conn = get_connection()
+    if not conn:
+        print("❌ Failed to connect to SQLite Cloud!")
+        return False
+    
+    try:
+        cursor = conn.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                amount REAL DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.close()
         print("✅ Database initialized!")
         return True
-    print("❌ Database initialization failed!")
-    return False
+    except Exception as e:
+        print(f"Database init error: {e}")
+        return False
 
-# Initialize database
-init_database()
-
-# ============ DATABASE FUNCTIONS ============
 def get_clients(user_id):
     """Get all clients for a user"""
-    sql = "SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC"
-    result = turso_query(sql, [user_id])
-    if result and "results" in result and len(result["results"]) > 0:
-        rows = result["results"][0].get("rows", [])
+    conn = get_connection()
+    if not conn:
+        return []
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC",
+            [user_id]
+        )
         clients = []
-        for row in rows:
+        for row in cursor.fetchall():
             clients.append({
                 "id": row[0],
                 "user_id": row[1],
                 "name": row[2],
                 "amount": row[3]
             })
+        conn.close()
         return clients
-    return []
+    except Exception as e:
+        print(f"Get clients error: {e}")
+        return []
 
 def add_client(user_id, name, amount):
     """Add or update a client"""
-    # Check if client exists
-    sql = "SELECT * FROM clients WHERE user_id = ? AND name = ?"
-    result = turso_query(sql, [user_id, name])
-    if result and "results" in result and len(result["results"]) > 0:
-        rows = result["results"][0].get("rows", [])
-        if rows:
-            old_amount = rows[0][3]
-            new_amount = old_amount + amount
-            sql = "UPDATE clients SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-            turso_query(sql, [new_amount, rows[0][0]])
-            return "updated", old_amount, new_amount
+    conn = get_connection()
+    if not conn:
+        return "error", 0, 0
     
-    # Add new client
-    sql = "INSERT INTO clients (user_id, name, amount) VALUES (?, ?, ?)"
-    result = turso_query(sql, [user_id, name, amount])
-    if result is not None:
-        return "added", 0, amount
-    return "error", 0, 0
+    try:
+        # Check if client exists
+        cursor = conn.execute(
+            "SELECT * FROM clients WHERE user_id = ? AND name = ?",
+            [user_id, name]
+        )
+        row = cursor.fetchone()
+        
+        if row:
+            old_amount = row[3]
+            new_amount = old_amount + amount
+            conn.execute(
+                "UPDATE clients SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                [new_amount, row[0]]
+            )
+            conn.close()
+            return "updated", old_amount, new_amount
+        else:
+            conn.execute(
+                "INSERT INTO clients (user_id, name, amount) VALUES (?, ?, ?)",
+                [user_id, name, amount]
+            )
+            conn.close()
+            return "added", 0, amount
+    except Exception as e:
+        print(f"Add client error: {e}")
+        return "error", 0, 0
 
 def mark_paid(user_id, name):
     """Mark a client as paid"""
-    sql = "UPDATE clients SET amount = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?"
-    result = turso_query(sql, [user_id, name])
-    return result is not None
+    conn = get_connection()
+    if not conn:
+        return False
+    try:
+        conn.execute(
+            "UPDATE clients SET amount = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?",
+            [user_id, name]
+        )
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Mark paid error: {e}")
+        return False
 
 def remove_client(user_id, name):
     """Remove a client completely"""
-    sql = "DELETE FROM clients WHERE user_id = ? AND name = ?"
-    result = turso_query(sql, [user_id, name])
-    return result is not None
+    conn = get_connection()
+    if not conn:
+        return False
+    try:
+        conn.execute(
+            "DELETE FROM clients WHERE user_id = ? AND name = ?",
+            [user_id, name]
+        )
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Remove client error: {e}")
+        return False
 
 def get_total_pending(user_id):
     """Get total pending amount"""
@@ -115,9 +146,16 @@ def get_total_pending(user_id):
 
 def delete_all_clients(user_id):
     """Delete all clients for a user"""
-    sql = "DELETE FROM clients WHERE user_id = ?"
-    result = turso_query(sql, [user_id])
-    return result is not None
+    conn = get_connection()
+    if not conn:
+        return False
+    try:
+        conn.execute("DELETE FROM clients WHERE user_id = ?", [user_id])
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Delete all error: {e}")
+        return False
 
 # ============ TELEGRAM FUNCTIONS ============
 def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
@@ -180,9 +218,6 @@ def handle_callback(callback_query):
     answer_callback(callback_id)
 
     if data == "add_client":
-        edit_message(chat_id, message_id, 
-            "➕ **Add Client**\n\nSend the client name and amount like this:\n\n`John 5000`\n\n(Just type it as a message)")
-        # Show menu after action
         send_menu(chat_id, "➕ **Add Client**\n\nSend the client name and amount like this:\n\n`John 5000`\n\n(Just type it as a message)")
         return
 
@@ -214,7 +249,7 @@ def handle_callback(callback_query):
                  "callback_data": f"paid_{c.get('name')}"}
             ])
         keyboard["inline_keyboard"].append([{"text": "🔙 Back to Menu", "callback_data": "menu"}])
-        edit_message(chat_id, message_id, "✅ **Select a client to mark as paid:**", reply_markup=json.dumps(keyboard))
+        send_telegram(chat_id, "✅ **Select a client to mark as paid:**", reply_markup=json.dumps(keyboard))
         return
 
     elif data == "send_reminder":
@@ -230,7 +265,7 @@ def handle_callback(callback_query):
                  "callback_data": f"remind_{c.get('name')}"}
             ])
         keyboard["inline_keyboard"].append([{"text": "🔙 Back to Menu", "callback_data": "menu"}])
-        edit_message(chat_id, message_id, "🔔 **Select a client to remind:**", reply_markup=json.dumps(keyboard))
+        send_telegram(chat_id, "🔔 **Select a client to remind:**", reply_markup=json.dumps(keyboard))
         return
 
     elif data == "status":
@@ -254,7 +289,7 @@ def handle_callback(callback_query):
             [{"text": "✅ Yes, Delete All", "callback_data": "confirm_reset"}],
             [{"text": "❌ Cancel", "callback_data": "menu"}]
         ]}
-        edit_message(chat_id, message_id, "⚠️ **WARNING:** This will delete ALL clients.\n\nAre you sure?", reply_markup=json.dumps(keyboard))
+        send_telegram(chat_id, "⚠️ **WARNING:** This will delete ALL clients.\n\nAre you sure?", reply_markup=json.dumps(keyboard))
         return
 
     elif data == "confirm_reset":
@@ -478,6 +513,9 @@ def index():
         "status": "Credit Tracker Bot is running!",
         "creator": "@Introspection007"
     })
+
+# ============ INITIALIZE DATABASE ============
+init_database()
 
 if __name__ == "__main__":
     app.run()
