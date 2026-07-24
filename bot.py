@@ -1,10 +1,10 @@
 import os
 import json
+import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
-from supabase import create_client, Client
 
 app = Flask(__name__)
 
@@ -13,88 +13,89 @@ BOT_TOKEN = "8958327625:AAE6B5kypZyXEFDaEx93FgT1nzyVR_6l_Fc"
 SUPABASE_URL = "https://vqqkfongtzjjhiagmxcn.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxcWtmb25ndHpqamhpYWdteGNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4OTg4NDAsImV4cCI6MjEwMDQ3NDg0MH0.44ZTRCPZdid_yccX2jlif6yDuntinIFi-e1psPgBdb8"
 
-# Initialize Supabase
-try:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("✅ Supabase connected!")
-except Exception as e:
-    print(f"❌ Supabase error: {e}")
-    supabase = None
-
-# ============ DATABASE FUNCTIONS ============
-def get_clients(user_id):
-    if not supabase:
-        return []
+# ============ SUPABASE HTTP FUNCTIONS (No Client) ============
+def supabase_request(method, table, params=None, data=None):
+    """Make a direct HTTP request to Supabase REST API"""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+    
     try:
-        result = supabase.table("clients").select("*").eq("user_id", user_id).order("name").execute()
-        return result.data if result.data else []
+        if method == "GET":
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+        elif method == "POST":
+            response = requests.post(url, headers=headers, json=data, timeout=10)
+        elif method == "PATCH":
+            response = requests.patch(url, headers=headers, json=data, params=params, timeout=10)
+        elif method == "DELETE":
+            response = requests.delete(url, headers=headers, params=params, timeout=10)
+        else:
+            return None
+        
+        if response.status_code in [200, 201, 204]:
+            return response.json() if response.text else []
+        else:
+            print(f"Supabase HTTP error: {response.status_code} - {response.text}")
+            return None
     except Exception as e:
-        print(f"Get clients error: {e}")
-        return []
+        print(f"Supabase request error: {e}")
+        return None
+
+def get_clients(user_id):
+    params = {"user_id": f"eq.{user_id}", "order": "name.asc"}
+    result = supabase_request("GET", "clients", params=params)
+    return result if result else []
 
 def add_client(user_id, name, amount):
-    if not supabase:
-        return "error", 0, 0
-    try:
-        existing = supabase.table("clients").select("*").eq("user_id", user_id).eq("name", name).execute()
-        if existing.data:
-            new_amount = existing.data[0]["amount"] + amount
-            supabase.table("clients").update({
-                "amount": new_amount,
-                "updated_at": datetime.now().isoformat()
-            }).eq("id", existing.data[0]["id"]).execute()
-            return "updated", existing.data[0]["amount"], new_amount
-        else:
-            supabase.table("clients").insert({
-                "user_id": user_id,
-                "name": name,
-                "amount": amount,
-                "created_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat()
-            }).execute()
-            return "added", 0, amount
-    except Exception as e:
-        print(f"Add client error: {e}")
-        return "error", 0, 0
+    existing = get_clients(user_id)
+    for client in existing:
+        if client.get("name") == name:
+            new_amount = client.get("amount", 0) + amount
+            params = {"id": f"eq.{client['id']}"}
+            data = {"amount": new_amount, "updated_at": datetime.now().isoformat()}
+            result = supabase_request("PATCH", "clients", params=params, data=data)
+            return "updated", client.get("amount", 0), new_amount
+    
+    data = {
+        "user_id": user_id,
+        "name": name,
+        "amount": amount,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat()
+    }
+    result = supabase_request("POST", "clients", data=data)
+    return "added", 0, amount
 
 def remove_client(user_id, name):
-    if not supabase:
-        return False
-    try:
-        supabase.table("clients").delete().eq("user_id", user_id).eq("name", name).execute()
-        return True
-    except:
-        return False
+    params = {"user_id": f"eq.{user_id}", "name": f"eq.{name}"}
+    result = supabase_request("DELETE", "clients", params=params)
+    return True
 
 def mark_paid(user_id, name):
-    if not supabase:
-        return False
-    try:
-        supabase.table("clients").update({
-            "amount": 0,
-            "updated_at": datetime.now().isoformat()
-        }).eq("user_id", user_id).eq("name", name).execute()
-        return True
-    except:
-        return False
+    existing = get_clients(user_id)
+    for client in existing:
+        if client.get("name") == name:
+            params = {"id": f"eq.{client['id']}"}
+            data = {"amount": 0, "updated_at": datetime.now().isoformat()}
+            result = supabase_request("PATCH", "clients", params=params, data=data)
+            return True
+    return False
 
 def get_total_pending(user_id):
-    if not supabase:
-        return 0
-    try:
-        result = supabase.table("clients").select("amount").eq("user_id", user_id).execute()
-        return sum(c["amount"] for c in result.data) if result.data else 0
-    except:
-        return 0
+    clients = get_clients(user_id)
+    return sum(c.get("amount", 0) for c in clients)
 
 def delete_all_clients(user_id):
-    if not supabase:
-        return False
-    try:
-        supabase.table("clients").delete().eq("user_id", user_id).execute()
-        return True
-    except:
-        return False
+    params = {"user_id": f"eq.{user_id}"}
+    result = supabase_request("DELETE", "clients", params=params)
+    return True
+
+# ============ TELEGRAM BOT SETUP ============
+telegram_app = Application.builder().token(BOT_TOKEN).build()
 
 # ============ BOT COMMANDS ============
 
@@ -190,7 +191,7 @@ async def add_client_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def list_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     clients = get_clients(user_id)
-    active_clients = [c for c in clients if c["amount"] > 0]
+    active_clients = [c for c in clients if c.get("amount", 0) > 0]
     
     if not active_clients:
         await update.message.reply_text(
@@ -201,9 +202,9 @@ async def list_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     msg = "📋 **Pending Clients**\n\n"
     total = 0
-    for i, client in enumerate(sorted(active_clients, key=lambda x: x["amount"], reverse=True), 1):
-        msg += f"{i}. **{client['name']}**: ₹{client['amount']}\n"
-        total += client["amount"]
+    for i, client in enumerate(sorted(active_clients, key=lambda x: x.get("amount", 0), reverse=True), 1):
+        msg += f"{i}. **{client.get('name', 'N/A')}**: ₹{client.get('amount', 0)}\n"
+        total += client.get("amount", 0)
     
     msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💰 **Total:** ₹{total}"
     msg += f"\n👤 **Clients:** {len(active_clients)}"
@@ -223,7 +224,7 @@ async def paid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     name = " ".join(parts[1:])
     clients = get_clients(user_id)
-    client = next((c for c in clients if c["name"] == name), None)
+    client = next((c for c in clients if c.get("name") == name), None)
     
     if not client:
         await update.message.reply_text(
@@ -232,7 +233,7 @@ async def paid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    if client["amount"] == 0:
+    if client.get("amount", 0) == 0:
         await update.message.reply_text(
             f"✅ **{name}** is already paid up! 🎉",
             parse_mode="Markdown"
@@ -242,7 +243,7 @@ async def paid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if mark_paid(user_id, name):
         await update.message.reply_text(
             f"✅ **{name}** marked as paid!\n\n"
-            f"💳 ₹{client['amount']} cleared.\n"
+            f"💳 ₹{client.get('amount', 0)} cleared.\n"
             f"📊 **Remaining Total:** ₹{get_total_pending(user_id)}",
             parse_mode="Markdown"
         )
@@ -262,7 +263,7 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     name = " ".join(parts[1:])
     clients = get_clients(user_id)
-    client = next((c for c in clients if c["name"] == name), None)
+    client = next((c for c in clients if c.get("name") == name), None)
     
     if not client:
         await update.message.reply_text(
@@ -271,13 +272,13 @@ async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    if client["amount"] == 0:
+    if client.get("amount", 0) == 0:
         await update.message.reply_text(f"✅ **{name}** doesn't have any pending amount.")
         return
     
     reminder_msg = f"""🔔 **Reminder for {name}**
 
-Hi {name}, this is a gentle reminder that ₹{client['amount']} is pending payment.
+Hi {name}, this is a gentle reminder that ₹{client.get('amount', 0)} is pending payment.
 
 Please settle at your earliest convenience. Thank you! 🙏
 
@@ -285,7 +286,7 @@ Please settle at your earliest convenience. Thank you! 🙏
 📱 **From:** @Introspection007"""
 
     await update.message.reply_text(
-        f"📤 **Reminder sent for {name}**\n\n💳 Amount: ₹{client['amount']}",
+        f"📤 **Reminder sent for {name}**\n\n💳 Amount: ₹{client.get('amount', 0)}",
         parse_mode="Markdown"
     )
     await update.message.reply_text(reminder_msg, parse_mode="Markdown")
@@ -293,8 +294,8 @@ Please settle at your earliest convenience. Thank you! 🙏
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     clients = get_clients(user_id)
-    active_clients = [c for c in clients if c["amount"] > 0]
-    total = sum(c["amount"] for c in active_clients)
+    active_clients = [c for c in clients if c.get("amount", 0) > 0]
+    total = sum(c.get("amount", 0) for c in active_clients)
     
     msg = f"💰 **Financial Status**\n\n"
     msg += f"📊 **Total Pending:** ₹{total}\n"
@@ -302,8 +303,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"📋 **Total Clients:** {len(clients)}\n\n"
     
     if active_clients:
-        highest = sorted(active_clients, key=lambda x: x["amount"], reverse=True)[0]
-        msg += f"🏆 **Highest:** {highest['name']} (₹{highest['amount']})"
+        highest = sorted(active_clients, key=lambda x: x.get("amount", 0), reverse=True)[0]
+        msg += f"🏆 **Highest:** {highest.get('name', 'N/A')} (₹{highest.get('amount', 0)})"
     else:
         msg += f"🎉 **All clients paid up!**"
     
@@ -322,13 +323,13 @@ async def delete_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     name = " ".join(parts[1:])
     clients = get_clients(user_id)
-    client = next((c for c in clients if c["name"] == name), None)
+    client = next((c for c in clients if c.get("name") == name), None)
     
     if not client:
         await update.message.reply_text(f"❌ Client **{name}** not found.", parse_mode="Markdown")
         return
     
-    amount = client["amount"]
+    amount = client.get("amount", 0)
     if remove_client(user_id, name):
         await update.message.reply_text(
             f"🗑️ **{name}** removed!\n\n"
@@ -357,7 +358,7 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"⚠️ **WARNING:** This will delete ALL {len(clients)} clients.\n\n"
-        f"Total pending: ₹{sum(c['amount'] for c in clients)}\n\n"
+        f"Total pending: ₹{sum(c.get('amount', 0) for c in clients)}\n\n"
         f"Are you sure?",
         parse_mode="Markdown",
         reply_markup=reply_markup
