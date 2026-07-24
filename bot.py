@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import time
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -14,50 +15,63 @@ JSONBIN_API_KEY = "$2a$10$qqjGIWOcISCJp9wWNKj8fep9p3E2q4Pjz0DeTC/QHXkPahLr24Uta"
 JSONBIN_BIN_ID = "6a63a302da38895dfe8b001f"
 
 # ============ JSONBIN DATABASE FUNCTIONS ============
-def load_data():
-    """Load data from JSONBin"""
+def load_data(retries=3):
+    """Load data from JSONBin with retry"""
     url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
     headers = {
         "X-Master-Key": JSONBIN_API_KEY,
         "Content-Type": "application/json"
     }
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            print(f"✅ Data loaded: {data}")
-            return data.get("record", {})
-        else:
-            print(f"Load error: {response.status_code}")
-            return {}
-    except Exception as e:
-        print(f"Load error: {e}")
-        return {}
+    
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                record = data.get("record", {})
+                print(f"✅ Data loaded: {record}")
+                return record
+            else:
+                print(f"Load attempt {attempt+1} failed: {response.status_code}")
+                time.sleep(1)
+        except Exception as e:
+            print(f"Load attempt {attempt+1} error: {e}")
+            time.sleep(1)
+    
+    print("❌ All load attempts failed")
+    return {}
 
-def save_data(data):
-    """Save data to JSONBin"""
+def save_data(data, retries=3):
+    """Save data to JSONBin with retry"""
     url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
     headers = {
         "X-Master-Key": JSONBIN_API_KEY,
         "Content-Type": "application/json"
     }
-    try:
-        response = requests.put(url, json=data, headers=headers, timeout=10)
-        if response.status_code == 200:
-            print(f"✅ Data saved: {data}")
-            return True
-        else:
-            print(f"Save error: {response.status_code} - {response.text}")
-            return False
-    except Exception as e:
-        print(f"Save error: {e}")
-        return False
+    
+    for attempt in range(retries):
+        try:
+            response = requests.put(url, json=data, headers=headers, timeout=10)
+            if response.status_code == 200:
+                print(f"✅ Data saved: {data}")
+                return True
+            else:
+                print(f"Save attempt {attempt+1} failed: {response.status_code}")
+                time.sleep(1)
+        except Exception as e:
+            print(f"Save attempt {attempt+1} error: {e}")
+            time.sleep(1)
+    
+    print("❌ All save attempts failed")
+    return False
 
 def get_clients(user_id):
     """Get all clients for a user"""
     data = load_data()
     user_key = str(user_id)
-    return data.get(user_key, [])
+    clients = data.get(user_key, [])
+    print(f"📊 Retrieved {len(clients)} clients for user {user_id}")
+    return clients
 
 def add_client(user_id, name, amount):
     """Add or update a client"""
@@ -73,8 +87,9 @@ def add_client(user_id, name, amount):
             old_amount = client.get("amount", 0)
             client["amount"] = old_amount + amount
             client["updated_at"] = datetime.now().isoformat()
-            save_data(data)
-            return "updated", old_amount, client["amount"]
+            if save_data(data):
+                return "updated", old_amount, client["amount"]
+            return "error", 0, 0
     
     # Add new client
     data[user_key].append({
@@ -83,8 +98,9 @@ def add_client(user_id, name, amount):
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat()
     })
-    save_data(data)
-    return "added", 0, amount
+    if save_data(data):
+        return "added", 0, amount
+    return "error", 0, 0
 
 def mark_paid(user_id, name):
     """Mark a client as paid"""
@@ -98,8 +114,7 @@ def mark_paid(user_id, name):
         if client.get("name").lower() == name.lower():
             client["amount"] = 0
             client["updated_at"] = datetime.now().isoformat()
-            save_data(data)
-            return True
+            return save_data(data)
     return False
 
 def remove_client(user_id, name):
@@ -113,8 +128,7 @@ def remove_client(user_id, name):
     for i, client in enumerate(data[user_key]):
         if client.get("name").lower() == name.lower():
             del data[user_key][i]
-            save_data(data)
-            return True
+            return save_data(data)
     return False
 
 def get_total_pending(user_id):
@@ -126,7 +140,7 @@ def delete_all_clients(user_id):
     user_key = str(user_id)
     if user_key in data:
         del data[user_key]
-        save_data(data)
+        return save_data(data)
     return True
 
 # ============ TELEGRAM FUNCTIONS ============
@@ -136,12 +150,9 @@ def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = reply_markup
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        print(f"Send response: {response.status_code}")
-        return response.json()
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Send error: {e}")
-        return None
 
 def send_menu(chat_id, text=None):
     keyboard = {
