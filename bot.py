@@ -13,7 +13,7 @@ BOT_TOKEN = "8958327625:AAE6B5kypZyXEFDaEx93FgT1nzyVR_6l_Fc"
 SUPABASE_URL = "https://vqqkfongtzjjhiagmxcn.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxcWtmb25ndHpqamhpYWdteGNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4OTg4NDAsImV4cCI6MjEwMDQ3NDg0MH0.44ZTRCPZdid_yccX2jlif6yDuntinIFi-e1psPgBdb8"
 
-# ============ SIMPLIFIED SUPABASE FUNCTIONS ============
+# ============ SUPABASE FUNCTIONS ============
 def add_client_supabase(name, amount):
     """Add client directly to Supabase using REST API"""
     url = f"{SUPABASE_URL}/rest/v1/clients"
@@ -23,7 +23,8 @@ def add_client_supabase(name, amount):
         "Content-Type": "application/json",
         "Prefer": "return=representation"
     }
-    data = {"name": name, "amount": amount}
+    # Force amount to integer
+    data = {"name": name, "amount": int(amount)}
     
     try:
         print(f"📤 Sending to Supabase: {data}")
@@ -79,7 +80,7 @@ def update_client_amount_supabase(name, amount):
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json"
     }
-    data = {"amount": amount}
+    data = {"amount": int(amount)}
     try:
         response = requests.patch(url, json=data, headers=headers, timeout=10)
         return response.status_code in [200, 204]
@@ -335,12 +336,12 @@ def webhook():
                 send_menu(chat_id, "❌ Usage: `/add [name] [amount]`")
                 return jsonify({"status": "ok"}), 200
             try:
-                amount = float(parts[-1])
+                amount = int(parts[-1])
                 if amount <= 0:
                     send_menu(chat_id, "❌ Amount must be > 0")
                     return jsonify({"status": "ok"}), 200
             except:
-                send_menu(chat_id, "❌ Invalid amount")
+                send_menu(chat_id, "❌ Invalid amount. Please enter a whole number like 5000")
                 return jsonify({"status": "ok"}), 200
             name = " ".join(parts[1:-1])
             if add_client_supabase(name, amount):
@@ -436,7 +437,7 @@ Please settle at your earliest convenience. Thank you! 🙏
         parts = text.split(" ")
         if len(parts) >= 2:
             try:
-                amount = float(parts[-1])
+                amount = int(parts[-1])
                 if amount > 0:
                     name = " ".join(parts[:-1])
                     if add_client_supabase(name, amount):
@@ -446,9 +447,9 @@ Please settle at your earliest convenience. Thank you! 🙏
                 else:
                     send_menu(chat_id, "❌ Amount must be > 0")
             except:
-                send_menu(chat_id, "❌ Enter: `[name] [amount]`")
+                send_menu(chat_id, "❌ Enter: `[name] [amount]` (e.g., `John 5000`)")
         else:
-            send_menu(chat_id, "❌ Enter: `[name] [amount]`")
+            send_menu(chat_id, "❌ Enter: `[name] [amount]` (e.g., `John 5000`)")
         
         return jsonify({"status": "ok"}), 200
         
