@@ -54,7 +54,11 @@ def add_client(name, amount):
     """Add a new client"""
     data = {"name": name, "amount": amount}
     result = supabase_query("clients", data=data, method="POST")
-    return result is not None
+    if result is None:
+        print(f"❌ Failed to add client: {name} - {amount}")
+        return False
+    print(f"✅ Client added: {name} - {amount}")
+    return True
 
 def update_client_amount(name, new_amount):
     """Update client amount"""
@@ -323,7 +327,7 @@ def webhook():
             if add_client(name, amount):
                 send_menu(chat_id, f"✅ **{name}** added with ₹{amount}")
             else:
-                send_menu(chat_id, "❌ Error adding client")
+                send_menu(chat_id, "❌ Error adding client. Please try again.")
             return jsonify({"status": "ok"}), 200
         
         if text == "/list":
@@ -413,7 +417,7 @@ Please settle at your earliest convenience. Thank you! 🙏
                     if add_client(name, amount):
                         send_menu(chat_id, f"✅ **{name}** added with ₹{amount}")
                     else:
-                        send_menu(chat_id, "❌ Error adding client")
+                        send_menu(chat_id, "❌ Error adding client. Please try again.")
                 else:
                     send_menu(chat_id, "❌ Amount must be > 0")
             except:
