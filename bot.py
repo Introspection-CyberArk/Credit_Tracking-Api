@@ -9,11 +9,11 @@ app = Flask(__name__)
 # ============ CONFIGURATION ============
 BOT_TOKEN = "8958327625:AAE6B5kypZyXEFDaEx93FgT1nzyVR_6l_Fc"
 
-# Supabase Configuration (Using your existing credentials)
+# Supabase Configuration
 SUPABASE_URL = "https://vqqkfongtzjjhiagmxcn.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxcWtmb25ndHpqamhpYWdteGNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4OTg4NDAsImV4cCI6MjEwMDQ3NDg0MH0.44ZTRCPZdid_yccX2jlif6yDuntinIFi-e1psPgBdb8"
 
-# ============ SUPABASE HTTP API FUNCTIONS ============
+# ============ SUPABASE FUNCTIONS ============
 def supabase_query(table, params=None, data=None, method="GET"):
     """Direct HTTP request to Supabase"""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
@@ -45,80 +45,38 @@ def supabase_query(table, params=None, data=None, method="GET"):
         print(f"Supabase error: {e}")
         return None
 
-def create_table_if_not_exists():
-    """Create the clients table if it doesn't exist"""
-    # We'll use a simple approach - try to insert and handle error
-    sql = """
-    CREATE TABLE IF NOT EXISTS clients (
-        id BIGSERIAL PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        name TEXT NOT NULL,
-        amount INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-    );
-    """
-    # Since Supabase REST API doesn't support raw SQL directly,
-    # we'll use the SQL Editor in the dashboard manually
-    print("⚠️ Please create the 'clients' table in Supabase SQL Editor with the above query")
-    return True
-
-def get_clients(user_id):
-    """Get all clients for a user"""
-    params = {"user_id": f"eq.{user_id}", "order": "name.asc"}
-    result = supabase_query("clients", params=params)
+def get_clients():
+    """Get all clients"""
+    result = supabase_query("clients", params={"order": "name.asc"})
     return result if result else []
 
-def add_client(user_id, name, amount):
-    """Add or update a client"""
-    # Check if client exists
-    params = {"user_id": f"eq.{user_id}", "name": f"eq.{name}"}
-    existing = supabase_query("clients", params=params)
-    
-    if existing and len(existing) > 0:
-        old_amount = existing[0].get("amount", 0)
-        new_amount = old_amount + amount
-        data = {"amount": new_amount, "updated_at": datetime.now().isoformat()}
-        params = {"id": f"eq.{existing[0]['id']}"}
-        result = supabase_query("clients", data=data, params=params, method="PATCH")
-        if result is not None:
-            return "updated", old_amount, new_amount
-        return "error", 0, 0
-    
-    # Add new client
-    data = {
-        "user_id": user_id,
-        "name": name,
-        "amount": amount,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat()
-    }
+def add_client(name, amount):
+    """Add a new client"""
+    data = {"name": name, "amount": amount}
     result = supabase_query("clients", data=data, method="POST")
-    if result is not None:
-        return "added", 0, amount
-    return "error", 0, 0
+    return result is not None
 
-def mark_paid(user_id, name):
-    """Mark a client as paid"""
-    params = {"user_id": f"eq.{user_id}", "name": f"eq.{name}"}
-    data = {"amount": 0, "updated_at": datetime.now().isoformat()}
+def update_client_amount(name, new_amount):
+    """Update client amount"""
+    params = {"name": f"eq.{name}"}
+    data = {"amount": new_amount}
     result = supabase_query("clients", data=data, params=params, method="PATCH")
     return result is not None
 
-def remove_client(user_id, name):
-    """Remove a client completely"""
-    params = {"user_id": f"eq.{user_id}", "name": f"eq.{name}"}
+def delete_client(name):
+    """Delete a client"""
+    params = {"name": f"eq.{name}"}
     result = supabase_query("clients", params=params, method="DELETE")
     return result is not None
 
-def get_total_pending(user_id):
-    clients = get_clients(user_id)
+def delete_all_clients():
+    """Delete all clients"""
+    result = supabase_query("clients", method="DELETE")
+    return result is not None
+
+def get_total_pending():
+    clients = get_clients()
     return sum(c.get("amount", 0) for c in clients)
-
-def delete_all_clients(user_id):
-    params = {"user_id": f"eq.{user_id}"}
-    result = supabase_query("clients", params=params, method="DELETE")
-    return result is not None
 
 # ============ TELEGRAM FUNCTIONS ============
 def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
@@ -128,7 +86,6 @@ def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
         payload["reply_markup"] = reply_markup
     try:
         response = requests.post(url, json=payload, timeout=10)
-        print(f"Send response: {response.status_code}")
         return response.json()
     except Exception as e:
         print(f"Send error: {e}")
@@ -178,7 +135,6 @@ def handle_callback(callback_query):
     data = callback_query.get("data")
     chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
     message_id = callback_query.get("message", {}).get("message_id")
-    user_id = callback_query.get("from", {}).get("id")
     
     answer_callback(callback_id)
 
@@ -187,7 +143,7 @@ def handle_callback(callback_query):
         return
 
     elif data == "list_clients":
-        clients = get_clients(user_id)
+        clients = get_clients()
         active = [c for c in clients if c.get("amount", 0) > 0]
         if not active:
             send_menu(chat_id, "📭 **No pending clients!**")
@@ -202,7 +158,7 @@ def handle_callback(callback_query):
         return
 
     elif data == "mark_paid":
-        clients = get_clients(user_id)
+        clients = get_clients()
         active = [c for c in clients if c.get("amount", 0) > 0]
         if not active:
             send_menu(chat_id, "📭 No pending clients to mark as paid.")
@@ -218,7 +174,7 @@ def handle_callback(callback_query):
         return
 
     elif data == "send_reminder":
-        clients = get_clients(user_id)
+        clients = get_clients()
         active = [c for c in clients if c.get("amount", 0) > 0]
         if not active:
             send_menu(chat_id, "📭 No clients to remind.")
@@ -234,7 +190,7 @@ def handle_callback(callback_query):
         return
 
     elif data == "status":
-        clients = get_clients(user_id)
+        clients = get_clients()
         active = [c for c in clients if c.get("amount", 0) > 0]
         total = sum(c.get("amount", 0) for c in active)
         msg = f"💰 **Financial Status**\n\n"
@@ -258,7 +214,7 @@ def handle_callback(callback_query):
         return
 
     elif data == "confirm_reset":
-        delete_all_clients(user_id)
+        delete_all_clients()
         send_menu(chat_id, "🗑️ **All clients deleted!**")
         return
 
@@ -287,15 +243,20 @@ def handle_callback(callback_query):
 
     elif data.startswith("paid_"):
         name = data.replace("paid_", "")
-        if mark_paid(user_id, name):
-            send_menu(chat_id, f"✅ **{name}** marked as paid!\n\n📊 **Remaining Total:** ₹{get_total_pending(user_id)}")
+        clients = get_clients()
+        client = next((c for c in clients if c.get("name") == name), None)
+        if not client:
+            send_menu(chat_id, f"❌ **{name}** not found.")
+            return
+        if update_client_amount(name, 0):
+            send_menu(chat_id, f"✅ **{name}** marked as paid!\n\n📊 **Remaining Total:** ₹{get_total_pending()}")
         else:
-            send_menu(chat_id, f"❌ **{name}** not found or already paid.")
+            send_menu(chat_id, f"❌ Failed to mark {name} as paid.")
         return
 
     elif data.startswith("remind_"):
         name = data.replace("remind_", "")
-        clients = get_clients(user_id)
+        clients = get_clients()
         client = next((c for c in clients if c.get("name") == name), None)
         if not client:
             send_menu(chat_id, f"❌ **{name}** not found.")
@@ -331,12 +292,11 @@ def webhook():
         
         chat_id = message.get("chat", {}).get("id")
         text = message.get("text", "")
-        user_id = message.get("from", {}).get("id")
         
         if not chat_id or not text:
             return jsonify({"status": "ok"}), 200
         
-        print(f"📩 Message from {user_id}: {text}")
+        print(f"📩 Message: {text}")
         
         if text == "/start":
             send_menu(chat_id)
@@ -360,17 +320,14 @@ def webhook():
                 send_menu(chat_id, "❌ Invalid amount")
                 return jsonify({"status": "ok"}), 200
             name = " ".join(parts[1:-1])
-            status, old, new = add_client(user_id, name, amount)
-            if status == "added":
+            if add_client(name, amount):
                 send_menu(chat_id, f"✅ **{name}** added with ₹{amount}")
-            elif status == "updated":
-                send_menu(chat_id, f"✅ **{name}** updated\n📈 ₹{old} → ₹{new}")
             else:
                 send_menu(chat_id, "❌ Error adding client")
             return jsonify({"status": "ok"}), 200
         
         if text == "/list":
-            clients = get_clients(user_id)
+            clients = get_clients()
             active = [c for c in clients if c.get("amount", 0) > 0]
             if not active:
                 send_menu(chat_id, "📭 **No pending clients!**")
@@ -385,7 +342,7 @@ def webhook():
             return jsonify({"status": "ok"}), 200
         
         if text == "/status":
-            clients = get_clients(user_id)
+            clients = get_clients()
             active = [c for c in clients if c.get("amount", 0) > 0]
             total = sum(c.get("amount", 0) for c in active)
             send_menu(chat_id, f"💰 **Status:**\n📊 Pending: ₹{total}\n👤 Active: {len(active)}\n📋 Total: {len(clients)}")
@@ -397,7 +354,7 @@ def webhook():
                 send_menu(chat_id, "❌ Usage: `/paid [name]`")
                 return jsonify({"status": "ok"}), 200
             name = " ".join(parts[1:])
-            if mark_paid(user_id, name):
+            if update_client_amount(name, 0):
                 send_menu(chat_id, f"✅ **{name}** marked as paid!")
             else:
                 send_menu(chat_id, f"❌ **{name}** not found or already paid")
@@ -409,7 +366,7 @@ def webhook():
                 send_menu(chat_id, "❌ Usage: `/remind [name]`")
                 return jsonify({"status": "ok"}), 200
             name = " ".join(parts[1:])
-            clients = get_clients(user_id)
+            clients = get_clients()
             client = next((c for c in clients if c.get("name") == name), None)
             if not client:
                 send_menu(chat_id, f"❌ **{name}** not found")
@@ -435,14 +392,14 @@ Please settle at your earliest convenience. Thank you! 🙏
                 send_menu(chat_id, "❌ Usage: `/delete [name]`")
                 return jsonify({"status": "ok"}), 200
             name = " ".join(parts[1:])
-            if remove_client(user_id, name):
+            if delete_client(name):
                 send_menu(chat_id, f"🗑️ **{name}** removed")
             else:
                 send_menu(chat_id, f"❌ **{name}** not found")
             return jsonify({"status": "ok"}), 200
         
         if text == "/reset":
-            delete_all_clients(user_id)
+            delete_all_clients()
             send_menu(chat_id, "🗑️ **All clients deleted!**")
             return jsonify({"status": "ok"}), 200
         
@@ -453,11 +410,8 @@ Please settle at your earliest convenience. Thank you! 🙏
                 amount = float(parts[-1])
                 if amount > 0:
                     name = " ".join(parts[:-1])
-                    status, old, new = add_client(user_id, name, amount)
-                    if status == "added":
+                    if add_client(name, amount):
                         send_menu(chat_id, f"✅ **{name}** added with ₹{amount}")
-                    elif status == "updated":
-                        send_menu(chat_id, f"✅ **{name}** updated\n📈 ₹{old} → ₹{new}")
                     else:
                         send_menu(chat_id, "❌ Error adding client")
                 else:
