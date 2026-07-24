@@ -3,38 +3,56 @@ import json
 import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
-import libsql_client
 
 # ============ FLASK APP ============
 app = Flask(__name__)
 
 # ============ CONFIGURATION ============
 BOT_TOKEN = "8958327625:AAE6B5kypZyXEFDaEx93FgT1nzyVR_6l_Fc"
-
-# Turso Configuration
-TURSO_URL = "libsql://credittracker-introspection-cyberark.aws-ap-south-1.turso.io"
+TURSO_URL = "https://credittracker-introspection-cyberark.aws-ap-south-1.turso.io"
 TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODQ5MTI2OTEsImlkIjoiMDE5Zjk1MTYtMGUwMS03NmE2LTljZGYtOWI1MmI2OTlhMmMzIiwia2lkIjoiRTczUXltTjBjNFp4ZEhWdENSeXpBSzI4cmN6aUNya3c4aG03cjFQNU1GVSIsInJpZCI6ImJkYWQ3Y2RiLWY2MTYtNDYzMy1hZGVjLThlZWVlYTQxN2JlOCJ9.-MdzoO--wtvnCoZIXplgLrzjj7cl8eT_DNT-87cSSXaUGi1aGyzGo3lPKTPWzI4gKMLGDoMy61rIfz_qvPanAQ"
 
-# ============ DATABASE SETUP ============
+# ============ TURSO HTTP API FUNCTIONS ============
+def turso_query(sql, params=None):
+    """Execute a SQL query on Turso via HTTP API"""
+    url = f"{TURSO_URL}/v1/query"
+    headers = {
+        "Authorization": f"Bearer {TURSO_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "sql": sql,
+        "args": params if params else []
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Turso error: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        print(f"Turso request error: {e}")
+        return None
+
 def init_database():
     """Create the clients table if it doesn't exist"""
-    try:
-        with libsql_client.create_client_sync(TURSO_URL, auth_token=TURSO_TOKEN) as client:
-            client.execute("""
-                CREATE TABLE IF NOT EXISTS clients (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    amount REAL DEFAULT 0,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            print("✅ Database table ready!")
-            return True
-    except Exception as e:
-        print(f"❌ Database init error: {e}")
-        return False
+    sql = """
+        CREATE TABLE IF NOT EXISTS clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            amount REAL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    result = turso_query(sql)
+    if result is not None:
+        print("✅ Database initialized!")
+        return True
+    print("❌ Database initialization failed!")
+    return False
 
 # Initialize database
 init_database()
@@ -42,79 +60,53 @@ init_database()
 # ============ DATABASE FUNCTIONS ============
 def get_clients(user_id):
     """Get all clients for a user"""
-    try:
-        with libsql_client.create_client_sync(TURSO_URL, auth_token=TURSO_TOKEN) as client:
-            result = client.execute(
-                "SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC",
-                [user_id]
-            )
-            clients = []
-            for row in result.rows:
-                clients.append({
-                    "id": row["id"],
-                    "name": row["name"],
-                    "amount": row["amount"]
-                })
-            return clients
-    except Exception as e:
-        print(f"Get clients error: {e}")
-        return []
+    sql = "SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC"
+    result = turso_query(sql, [user_id])
+    if result and "results" in result and len(result["results"]) > 0:
+        rows = result["results"][0].get("rows", [])
+        clients = []
+        for row in rows:
+            clients.append({
+                "id": row[0],
+                "user_id": row[1],
+                "name": row[2],
+                "amount": row[3]
+            })
+        return clients
+    return []
 
 def add_client(user_id, name, amount):
     """Add or update a client"""
-    try:
-        with libsql_client.create_client_sync(TURSO_URL, auth_token=TURSO_TOKEN) as client:
-            # Check if client exists
-            existing = client.execute(
-                "SELECT * FROM clients WHERE user_id = ? AND name = ?",
-                [user_id, name]
-            )
-            
-            if existing.rows:
-                # Update existing client
-                old_amount = existing.rows[0]["amount"]
-                new_amount = old_amount + amount
-                client.execute(
-                    "UPDATE clients SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    [new_amount, existing.rows[0]["id"]]
-                )
-                return "updated", old_amount, new_amount
-            else:
-                # Add new client
-                client.execute(
-                    "INSERT INTO clients (user_id, name, amount) VALUES (?, ?, ?)",
-                    [user_id, name, amount]
-                )
-                return "added", 0, amount
-    except Exception as e:
-        print(f"Add client error: {e}")
-        return "error", 0, 0
+    # Check if client exists
+    sql = "SELECT * FROM clients WHERE user_id = ? AND name = ?"
+    result = turso_query(sql, [user_id, name])
+    if result and "results" in result and len(result["results"]) > 0:
+        rows = result["results"][0].get("rows", [])
+        if rows:
+            old_amount = rows[0][3]
+            new_amount = old_amount + amount
+            sql = "UPDATE clients SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            turso_query(sql, [new_amount, rows[0][0]])
+            return "updated", old_amount, new_amount
+    
+    # Add new client
+    sql = "INSERT INTO clients (user_id, name, amount) VALUES (?, ?, ?)"
+    result = turso_query(sql, [user_id, name, amount])
+    if result is not None:
+        return "added", 0, amount
+    return "error", 0, 0
 
 def mark_paid(user_id, name):
     """Mark a client as paid"""
-    try:
-        with libsql_client.create_client_sync(TURSO_URL, auth_token=TURSO_TOKEN) as client:
-            result = client.execute(
-                "UPDATE clients SET amount = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?",
-                [user_id, name]
-            )
-            return result.rows_affected > 0
-    except Exception as e:
-        print(f"Mark paid error: {e}")
-        return False
+    sql = "UPDATE clients SET amount = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?"
+    result = turso_query(sql, [user_id, name])
+    return result is not None
 
 def remove_client(user_id, name):
     """Remove a client completely"""
-    try:
-        with libsql_client.create_client_sync(TURSO_URL, auth_token=TURSO_TOKEN) as client:
-            result = client.execute(
-                "DELETE FROM clients WHERE user_id = ? AND name = ?",
-                [user_id, name]
-            )
-            return result.rows_affected > 0
-    except Exception as e:
-        print(f"Remove client error: {e}")
-        return False
+    sql = "DELETE FROM clients WHERE user_id = ? AND name = ?"
+    result = turso_query(sql, [user_id, name])
+    return result is not None
 
 def get_total_pending(user_id):
     """Get total pending amount"""
@@ -123,13 +115,9 @@ def get_total_pending(user_id):
 
 def delete_all_clients(user_id):
     """Delete all clients for a user"""
-    try:
-        with libsql_client.create_client_sync(TURSO_URL, auth_token=TURSO_TOKEN) as client:
-            client.execute("DELETE FROM clients WHERE user_id = ?", [user_id])
-            return True
-    except Exception as e:
-        print(f"Delete all error: {e}")
-        return False
+    sql = "DELETE FROM clients WHERE user_id = ?"
+    result = turso_query(sql, [user_id])
+    return result is not None
 
 # ============ TELEGRAM FUNCTIONS ============
 def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
@@ -142,7 +130,8 @@ def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
     except Exception as e:
         print(f"Send error: {e}")
 
-def send_menu(chat_id):
+def send_menu(chat_id, text=None):
+    """Send the main menu with buttons (ALWAYS visible)"""
     keyboard = {
         "inline_keyboard": [
             [{"text": "➕ Add Client", "callback_data": "add_client"}],
@@ -154,13 +143,14 @@ def send_menu(chat_id):
             [{"text": "❓ Help", "callback_data": "help"}]
         ]
     }
-    welcome = f"""💰 **Credit Tracker Bot**
+    if not text:
+        text = f"""💰 **Credit Tracker Bot**
 
 Tap a button below to manage your clients.
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
-    send_telegram(chat_id, welcome, reply_markup=json.dumps(keyboard))
+    send_telegram(chat_id, text, reply_markup=json.dumps(keyboard))
 
 def edit_message(chat_id, message_id, text, reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
@@ -192,13 +182,15 @@ def handle_callback(callback_query):
     if data == "add_client":
         edit_message(chat_id, message_id, 
             "➕ **Add Client**\n\nSend the client name and amount like this:\n\n`John 5000`\n\n(Just type it as a message)")
+        # Show menu after action
+        send_menu(chat_id, "➕ **Add Client**\n\nSend the client name and amount like this:\n\n`John 5000`\n\n(Just type it as a message)")
         return
 
     elif data == "list_clients":
         clients = get_clients(user_id)
         active = [c for c in clients if c.get("amount", 0) > 0]
         if not active:
-            edit_message(chat_id, message_id, "📭 **No pending clients!**")
+            send_menu(chat_id, "📭 **No pending clients!**")
             return
         msg = "📋 **Pending Clients**\n\n"
         total = 0
@@ -206,14 +198,14 @@ def handle_callback(callback_query):
             msg += f"{i}. **{c.get('name')}**: ₹{c.get('amount')}\n"
             total += c.get("amount", 0)
         msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💰 **Total:** ₹{total}\n👤 **Clients:** {len(active)}"
-        edit_message(chat_id, message_id, msg)
+        send_menu(chat_id, msg)
         return
 
     elif data == "mark_paid":
         clients = get_clients(user_id)
         active = [c for c in clients if c.get("amount", 0) > 0]
         if not active:
-            edit_message(chat_id, message_id, "📭 No pending clients to mark as paid.")
+            send_menu(chat_id, "📭 No pending clients to mark as paid.")
             return
         keyboard = {"inline_keyboard": []}
         for c in active:
@@ -229,7 +221,7 @@ def handle_callback(callback_query):
         clients = get_clients(user_id)
         active = [c for c in clients if c.get("amount", 0) > 0]
         if not active:
-            edit_message(chat_id, message_id, "📭 No clients to remind.")
+            send_menu(chat_id, "📭 No clients to remind.")
             return
         keyboard = {"inline_keyboard": []}
         for c in active:
@@ -254,7 +246,7 @@ def handle_callback(callback_query):
             msg += f"\n\n🏆 **Highest:** {highest.get('name')} (₹{highest.get('amount')})"
         else:
             msg += f"\n\n🎉 All clients paid up!"
-        edit_message(chat_id, message_id, msg)
+        send_menu(chat_id, msg)
         return
 
     elif data == "reset_all":
@@ -267,11 +259,26 @@ def handle_callback(callback_query):
 
     elif data == "confirm_reset":
         delete_all_clients(user_id)
-        edit_message(chat_id, message_id, "🗑️ **All clients deleted!**")
+        send_menu(chat_id, "🗑️ **All clients deleted!**")
         return
 
     elif data == "help":
-        edit_message(chat_id, message_id, "💰 **Commands:**\n/add [name] [amount]\n/list\n/paid [name]\n/remind [name]\n/status\n/delete [name]\n/reset\n\nOr use the menu buttons!")
+        help_text = """💰 **Credit Tracker Bot**
+
+**Commands:**
+/add [name] [amount] - Add client
+/list - Show all clients
+/paid [name] - Mark as paid
+/remind [name] - Send reminder
+/status - Show total
+/delete [name] - Remove client
+/reset - Delete ALL clients
+
+**OR use the menu buttons below!**
+
+━━━━━━━━━━━━━━━━━━━━━
+🤖 **Powered By @Introspection007**"""
+        send_menu(chat_id, help_text)
         return
 
     elif data == "menu":
@@ -281,9 +288,9 @@ def handle_callback(callback_query):
     elif data.startswith("paid_"):
         name = data.replace("paid_", "")
         if mark_paid(user_id, name):
-            edit_message(chat_id, message_id, f"✅ **{name}** marked as paid!\n\n📊 **Remaining Total:** ₹{get_total_pending(user_id)}")
+            send_menu(chat_id, f"✅ **{name}** marked as paid!\n\n📊 **Remaining Total:** ₹{get_total_pending(user_id)}")
         else:
-            edit_message(chat_id, message_id, f"❌ **{name}** not found or already paid.")
+            send_menu(chat_id, f"❌ **{name}** not found or already paid.")
         return
 
     elif data.startswith("remind_"):
@@ -291,10 +298,10 @@ def handle_callback(callback_query):
         clients = get_clients(user_id)
         client = next((c for c in clients if c.get("name") == name), None)
         if not client:
-            edit_message(chat_id, message_id, f"❌ **{name}** not found.")
+            send_menu(chat_id, f"❌ **{name}** not found.")
             return
         if client.get("amount", 0) == 0:
-            edit_message(chat_id, message_id, f"✅ **{name}** has no pending amount.")
+            send_menu(chat_id, f"✅ **{name}** has no pending amount.")
             return
         reminder_msg = f"""🔔 **Reminder for {name}**
 
@@ -304,8 +311,8 @@ Please settle at your earliest convenience. Thank you! 🙏
 
 ━━━━━━━━━━━━━━━━━━━━━
 📱 **From:** @Introspection007"""
-        edit_message(chat_id, message_id, f"📤 **Reminder sent for {name}**\n\n💳 Amount: ₹{client.get('amount')}")
         send_telegram(chat_id, reminder_msg)
+        send_menu(chat_id, f"📤 **Reminder sent for {name}**\n\n💳 Amount: ₹{client.get('amount')}")
         return
 
 # ============ FLASK WEBHOOK ============
@@ -335,38 +342,37 @@ def webhook():
             return jsonify({"status": "ok"}), 200
         
         if text == "/help":
-            send_telegram(chat_id, "💰 **Commands:**\n/add [name] [amount]\n/list\n/paid [name]\n/remind [name]\n/status\n/delete [name]\n/reset\n\nOr use the menu button!")
+            send_menu(chat_id, "💰 **Commands:**\n/add [name] [amount]\n/list\n/paid [name]\n/remind [name]\n/status\n/delete [name]\n/reset\n\nOr use the menu button!")
             return jsonify({"status": "ok"}), 200
         
         if text.startswith("/add "):
             parts = text.split(" ")
             if len(parts) < 3:
-                send_telegram(chat_id, "❌ Usage: `/add [name] [amount]`")
+                send_menu(chat_id, "❌ Usage: `/add [name] [amount]`")
                 return jsonify({"status": "ok"}), 200
             try:
                 amount = float(parts[-1])
                 if amount <= 0:
-                    send_telegram(chat_id, "❌ Amount must be > 0")
+                    send_menu(chat_id, "❌ Amount must be > 0")
                     return jsonify({"status": "ok"}), 200
             except:
-                send_telegram(chat_id, "❌ Invalid amount")
+                send_menu(chat_id, "❌ Invalid amount")
                 return jsonify({"status": "ok"}), 200
             name = " ".join(parts[1:-1])
             status, old, new = add_client(user_id, name, amount)
             if status == "added":
-                send_telegram(chat_id, f"✅ **{name}** added with ₹{amount}")
+                send_menu(chat_id, f"✅ **{name}** added with ₹{amount}")
             elif status == "updated":
-                send_telegram(chat_id, f"✅ **{name}** updated\n📈 ₹{old} → ₹{new}")
+                send_menu(chat_id, f"✅ **{name}** updated\n📈 ₹{old} → ₹{new}")
             else:
-                send_telegram(chat_id, "❌ Error adding client")
-            send_menu(chat_id)
+                send_menu(chat_id, "❌ Error adding client")
             return jsonify({"status": "ok"}), 200
         
         if text == "/list":
             clients = get_clients(user_id)
             active = [c for c in clients if c.get("amount", 0) > 0]
             if not active:
-                send_telegram(chat_id, "📭 **No pending clients!**")
+                send_menu(chat_id, "📭 **No pending clients!**")
                 return jsonify({"status": "ok"}), 200
             msg = "📋 **Pending Clients**\n\n"
             total = 0
@@ -374,41 +380,41 @@ def webhook():
                 msg += f"{i}. **{c['name']}**: ₹{c['amount']}\n"
                 total += c['amount']
             msg += f"\n💰 **Total:** ₹{total}"
-            send_telegram(chat_id, msg)
+            send_menu(chat_id, msg)
             return jsonify({"status": "ok"}), 200
         
         if text == "/status":
             clients = get_clients(user_id)
             active = [c for c in clients if c.get("amount", 0) > 0]
             total = sum(c.get("amount", 0) for c in active)
-            send_telegram(chat_id, f"💰 **Status:**\n📊 Pending: ₹{total}\n👤 Active: {len(active)}\n📋 Total: {len(clients)}")
+            send_menu(chat_id, f"💰 **Status:**\n📊 Pending: ₹{total}\n👤 Active: {len(active)}\n📋 Total: {len(clients)}")
             return jsonify({"status": "ok"}), 200
         
         if text.startswith("/paid "):
             parts = text.split(" ")
             if len(parts) < 2:
-                send_telegram(chat_id, "❌ Usage: `/paid [name]`")
+                send_menu(chat_id, "❌ Usage: `/paid [name]`")
                 return jsonify({"status": "ok"}), 200
             name = " ".join(parts[1:])
             if mark_paid(user_id, name):
-                send_telegram(chat_id, f"✅ **{name}** marked as paid!")
+                send_menu(chat_id, f"✅ **{name}** marked as paid!")
             else:
-                send_telegram(chat_id, f"❌ **{name}** not found or already paid")
+                send_menu(chat_id, f"❌ **{name}** not found or already paid")
             return jsonify({"status": "ok"}), 200
         
         if text.startswith("/remind "):
             parts = text.split(" ")
             if len(parts) < 2:
-                send_telegram(chat_id, "❌ Usage: `/remind [name]`")
+                send_menu(chat_id, "❌ Usage: `/remind [name]`")
                 return jsonify({"status": "ok"}), 200
             name = " ".join(parts[1:])
             clients = get_clients(user_id)
             client = next((c for c in clients if c.get("name") == name), None)
             if not client:
-                send_telegram(chat_id, f"❌ **{name}** not found")
+                send_menu(chat_id, f"❌ **{name}** not found")
                 return jsonify({"status": "ok"}), 200
             if client.get("amount", 0) == 0:
-                send_telegram(chat_id, f"✅ **{name}** has no pending amount")
+                send_menu(chat_id, f"✅ **{name}** has no pending amount")
                 return jsonify({"status": "ok"}), 200
             reminder_msg = f"""🔔 **Reminder for {name}**
 
@@ -418,25 +424,25 @@ Please settle at your earliest convenience. Thank you! 🙏
 
 ━━━━━━━━━━━━━━━━━━━━━
 📱 **From:** @Introspection007"""
-            send_telegram(chat_id, f"📤 **Reminder sent for {name}**\n\n💳 Amount: ₹{client.get('amount')}")
             send_telegram(chat_id, reminder_msg)
+            send_menu(chat_id, f"📤 **Reminder sent for {name}**\n\n💳 Amount: ₹{client.get('amount')}")
             return jsonify({"status": "ok"}), 200
         
         if text.startswith("/delete "):
             parts = text.split(" ")
             if len(parts) < 2:
-                send_telegram(chat_id, "❌ Usage: `/delete [name]`")
+                send_menu(chat_id, "❌ Usage: `/delete [name]`")
                 return jsonify({"status": "ok"}), 200
             name = " ".join(parts[1:])
             if remove_client(user_id, name):
-                send_telegram(chat_id, f"🗑️ **{name}** removed")
+                send_menu(chat_id, f"🗑️ **{name}** removed")
             else:
-                send_telegram(chat_id, f"❌ **{name}** not found")
+                send_menu(chat_id, f"❌ **{name}** not found")
             return jsonify({"status": "ok"}), 200
         
         if text == "/reset":
             delete_all_clients(user_id)
-            send_telegram(chat_id, "🗑️ **All clients deleted!**")
+            send_menu(chat_id, "🗑️ **All clients deleted!**")
             return jsonify({"status": "ok"}), 200
         
         # If not a command, treat as "name amount"
@@ -448,18 +454,17 @@ Please settle at your earliest convenience. Thank you! 🙏
                     name = " ".join(parts[:-1])
                     status, old, new = add_client(user_id, name, amount)
                     if status == "added":
-                        send_telegram(chat_id, f"✅ **{name}** added with ₹{amount}")
+                        send_menu(chat_id, f"✅ **{name}** added with ₹{amount}")
                     elif status == "updated":
-                        send_telegram(chat_id, f"✅ **{name}** updated\n📈 ₹{old} → ₹{new}")
+                        send_menu(chat_id, f"✅ **{name}** updated\n📈 ₹{old} → ₹{new}")
                     else:
-                        send_telegram(chat_id, "❌ Error adding client")
-                    send_menu(chat_id)
+                        send_menu(chat_id, "❌ Error adding client")
                 else:
-                    send_telegram(chat_id, "❌ Amount must be > 0")
+                    send_menu(chat_id, "❌ Amount must be > 0")
             except:
-                send_telegram(chat_id, "❌ Enter: `[name] [amount]`")
+                send_menu(chat_id, "❌ Enter: `[name] [amount]`")
         else:
-            send_telegram(chat_id, "❌ Enter: `[name] [amount]`")
+            send_menu(chat_id, "❌ Enter: `[name] [amount]`")
         
         return jsonify({"status": "ok"}), 200
         
