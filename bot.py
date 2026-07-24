@@ -3,8 +3,6 @@ import json
 import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 
 app = Flask(__name__)
 
@@ -13,7 +11,23 @@ BOT_TOKEN = "8958327625:AAE6B5kypZyXEFDaEx93FgT1nzyVR_6l_Fc"
 SUPABASE_URL = "https://vqqkfongtzjjhiagmxcn.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxcWtmb25ndHpqamhpYWdteGNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4OTg4NDAsImV4cCI6MjEwMDQ3NDg0MH0.44ZTRCPZdid_yccX2jlif6yDuntinIFi-e1psPgBdb8"
 
-# ============ SUPABASE HTTP FUNCTIONS ============
+# ============ TELEGRAM SEND FUNCTION ============
+def send_telegram(chat_id, text, parse_mode='Markdown'):
+    """Send message to Telegram"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json()
+    except Exception as e:
+        print(f"Send error: {e}")
+        return None
+
+# ============ SUPABASE FUNCTIONS ============
 def supabase_request(method, table, params=None, data=None):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     headers = {
@@ -38,10 +52,10 @@ def supabase_request(method, table, params=None, data=None):
         if response.status_code in [200, 201, 204]:
             return response.json() if response.text else []
         else:
-            print(f"Supabase HTTP error: {response.status_code}")
+            print(f"Supabase error: {response.status_code}")
             return None
     except Exception as e:
-        print(f"Supabase request error: {e}")
+        print(f"Supabase error: {e}")
         return None
 
 def get_clients(user_id):
@@ -93,16 +107,16 @@ def delete_all_clients(user_id):
     supabase_request("DELETE", "clients", params=params)
     return True
 
-# ============ TELEGRAM BOT SETUP ============
-telegram_app = Application.builder().token(BOT_TOKEN).build()
-
-# ============ BOT COMMANDS ============
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    total = get_total_pending(user_id)
-    clients = get_clients(user_id)
-    welcome = f"""💰 **Credit Tracker Bot**
+# ============ COMMAND HANDLERS ============
+def handle_command(chat_id, text, user_id):
+    parts = text.strip().split(" ")
+    command = parts[0].lower()
+    
+    # /start
+    if command == "/start":
+        total = get_total_pending(user_id)
+        clients = get_clients(user_id)
+        welcome = f"""💰 **Credit Tracker Bot**
 
 Welcome! I help you track client payments.
 
@@ -124,10 +138,12 @@ Welcome! I help you track client payments.
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
-    await update.message.reply_text(welcome, parse_mode="Markdown")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """💰 **Credit Tracker Bot**
+        send_telegram(chat_id, welcome)
+        return
+    
+    # /help
+    if command == "/help":
+        help_text = """💰 **Credit Tracker Bot**
 
 **Commands:**
 /add [name] [amount] - Add client with pending payment
@@ -145,137 +161,98 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
-async def add_client_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    parts = update.message.text.split(" ")
-    
-    if len(parts) < 3:
-        await update.message.reply_text(
-            "❌ **Usage:** `/add [name] [amount]`\n\nExample: `/add John 5000`",
-            parse_mode="Markdown"
-        )
+        send_telegram(chat_id, help_text)
         return
     
-    try:
-        amount = float(parts[-1])
-        if amount <= 0:
-            await update.message.reply_text("❌ Amount must be greater than 0.")
+    # /add
+    if command == "/add":
+        if len(parts) < 3:
+            send_telegram(chat_id, "❌ **Usage:** `/add [name] [amount]`\n\nExample: `/add John 5000`")
             return
-    except:
-        await update.message.reply_text("❌ Please enter a valid amount (e.g., 5000)")
+        
+        try:
+            amount = float(parts[-1])
+            if amount <= 0:
+                send_telegram(chat_id, "❌ Amount must be greater than 0.")
+                return
+        except:
+            send_telegram(chat_id, "❌ Please enter a valid amount (e.g., 5000)")
+            return
+        
+        name = " ".join(parts[1:-1])
+        status, old_amount, new_amount = add_client(user_id, name, amount)
+        
+        if status == "added":
+            send_telegram(chat_id, f"✅ **{name}** added with ₹{amount}\n\n💳 **Total:** ₹{new_amount}\n📊 **Overall Pending:** ₹{get_total_pending(user_id)}")
+        elif status == "updated":
+            send_telegram(chat_id, f"✅ **{name}** updated\n\n📈 ₹{old_amount} → ₹{new_amount}\n📊 **Overall Pending:** ₹{get_total_pending(user_id)}")
+        else:
+            send_telegram(chat_id, "❌ Something went wrong. Please try again.")
         return
     
-    name = " ".join(parts[1:-1])
-    status, old_amount, new_amount = add_client(user_id, name, amount)
-    
-    if status == "added":
-        await update.message.reply_text(
-            f"✅ **{name}** added with ₹{amount}\n\n"
-            f"💳 **Total:** ₹{new_amount}\n"
-            f"📊 **Overall Pending:** ₹{get_total_pending(user_id)}",
-            parse_mode="Markdown"
-        )
-    elif status == "updated":
-        await update.message.reply_text(
-            f"✅ **{name}** updated\n\n"
-            f"📈 ₹{old_amount} → ₹{new_amount}\n"
-            f"📊 **Overall Pending:** ₹{get_total_pending(user_id)}",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text("❌ Something went wrong. Please try again.")
-
-async def list_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    clients = get_clients(user_id)
-    active_clients = [c for c in clients if c.get("amount", 0) > 0]
-    
-    if not active_clients:
-        await update.message.reply_text(
-            "📭 **No pending clients**\n\nAll clients are paid up! 🎉",
-            parse_mode="Markdown"
-        )
+    # /list
+    if command == "/list":
+        clients = get_clients(user_id)
+        active_clients = [c for c in clients if c.get("amount", 0) > 0]
+        
+        if not active_clients:
+            send_telegram(chat_id, "📭 **No pending clients**\n\nAll clients are paid up! 🎉")
+            return
+        
+        msg = "📋 **Pending Clients**\n\n"
+        total = 0
+        for i, client in enumerate(sorted(active_clients, key=lambda x: x.get("amount", 0), reverse=True), 1):
+            msg += f"{i}. **{client.get('name', 'N/A')}**: ₹{client.get('amount', 0)}\n"
+            total += client.get("amount", 0)
+        
+        msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💰 **Total:** ₹{total}"
+        msg += f"\n👤 **Clients:** {len(active_clients)}"
+        send_telegram(chat_id, msg)
         return
     
-    msg = "📋 **Pending Clients**\n\n"
-    total = 0
-    for i, client in enumerate(sorted(active_clients, key=lambda x: x.get("amount", 0), reverse=True), 1):
-        msg += f"{i}. **{client.get('name', 'N/A')}**: ₹{client.get('amount', 0)}\n"
-        total += client.get("amount", 0)
-    
-    msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💰 **Total:** ₹{total}"
-    msg += f"\n👤 **Clients:** {len(active_clients)}"
-    
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def paid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    parts = update.message.text.split(" ")
-    
-    if len(parts) < 2:
-        await update.message.reply_text(
-            "❌ **Usage:** `/paid [name]`\n\nExample: `/paid John`",
-            parse_mode="Markdown"
-        )
+    # /paid
+    if command == "/paid":
+        if len(parts) < 2:
+            send_telegram(chat_id, "❌ **Usage:** `/paid [name]`\n\nExample: `/paid John`")
+            return
+        
+        name = " ".join(parts[1:])
+        clients = get_clients(user_id)
+        client = next((c for c in clients if c.get("name") == name), None)
+        
+        if not client:
+            send_telegram(chat_id, f"❌ Client **{name}** not found.\n\nUse `/list` to see all clients.")
+            return
+        
+        if client.get("amount", 0) == 0:
+            send_telegram(chat_id, f"✅ **{name}** is already paid up! 🎉")
+            return
+        
+        if mark_paid(user_id, name):
+            send_telegram(chat_id, f"✅ **{name}** marked as paid!\n\n💳 ₹{client.get('amount', 0)} cleared.\n📊 **Remaining Total:** ₹{get_total_pending(user_id)}")
+        else:
+            send_telegram(chat_id, "❌ Something went wrong. Please try again.")
         return
     
-    name = " ".join(parts[1:])
-    clients = get_clients(user_id)
-    client = next((c for c in clients if c.get("name") == name), None)
-    
-    if not client:
-        await update.message.reply_text(
-            f"❌ Client **{name}** not found.\n\nUse `/list` to see all clients.",
-            parse_mode="Markdown"
-        )
-        return
-    
-    if client.get("amount", 0) == 0:
-        await update.message.reply_text(
-            f"✅ **{name}** is already paid up! 🎉",
-            parse_mode="Markdown"
-        )
-        return
-    
-    if mark_paid(user_id, name):
-        await update.message.reply_text(
-            f"✅ **{name}** marked as paid!\n\n"
-            f"💳 ₹{client.get('amount', 0)} cleared.\n"
-            f"📊 **Remaining Total:** ₹{get_total_pending(user_id)}",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text("❌ Something went wrong. Please try again.")
-
-async def remind_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    parts = update.message.text.split(" ")
-    
-    if len(parts) < 2:
-        await update.message.reply_text(
-            "❌ **Usage:** `/remind [name]`\n\nExample: `/remind John`",
-            parse_mode="Markdown"
-        )
-        return
-    
-    name = " ".join(parts[1:])
-    clients = get_clients(user_id)
-    client = next((c for c in clients if c.get("name") == name), None)
-    
-    if not client:
-        await update.message.reply_text(
-            f"❌ Client **{name}** not found.\n\nUse `/list` to see all clients.",
-            parse_mode="Markdown"
-        )
-        return
-    
-    if client.get("amount", 0) == 0:
-        await update.message.reply_text(f"✅ **{name}** doesn't have any pending amount.")
-        return
-    
-    reminder_msg = f"""🔔 **Reminder for {name}**
+    # /remind
+    if command == "/remind":
+        if len(parts) < 2:
+            send_telegram(chat_id, "❌ **Usage:** `/remind [name]`\n\nExample: `/remind John`")
+            return
+        
+        name = " ".join(parts[1:])
+        clients = get_clients(user_id)
+        client = next((c for c in clients if c.get("name") == name), None)
+        
+        if not client:
+            send_telegram(chat_id, f"❌ Client **{name}** not found.\n\nUse `/list` to see all clients.")
+            return
+        
+        if client.get("amount", 0) == 0:
+            send_telegram(chat_id, f"✅ **{name}** doesn't have any pending amount.")
+            return
+        
+        reminder_msg = f"""🔔 **Reminder for {name}**
 
 Hi {name}, this is a gentle reminder that ₹{client.get('amount', 0)} is pending payment.
 
@@ -283,148 +260,87 @@ Please settle at your earliest convenience. Thank you! 🙏
 
 ━━━━━━━━━━━━━━━━━━━━━
 📱 **From:** @Introspection007"""
-
-    await update.message.reply_text(
-        f"📤 **Reminder sent for {name}**\n\n💳 Amount: ₹{client.get('amount', 0)}",
-        parse_mode="Markdown"
-    )
-    await update.message.reply_text(reminder_msg, parse_mode="Markdown")
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    clients = get_clients(user_id)
-    active_clients = [c for c in clients if c.get("amount", 0) > 0]
-    total = sum(c.get("amount", 0) for c in active_clients)
-    
-    msg = f"💰 **Financial Status**\n\n"
-    msg += f"📊 **Total Pending:** ₹{total}\n"
-    msg += f"👤 **Active Clients:** {len(active_clients)}\n"
-    msg += f"📋 **Total Clients:** {len(clients)}\n\n"
-    
-    if active_clients:
-        highest = sorted(active_clients, key=lambda x: x.get("amount", 0), reverse=True)[0]
-        msg += f"🏆 **Highest:** {highest.get('name', 'N/A')} (₹{highest.get('amount', 0)})"
-    else:
-        msg += f"🎉 **All clients paid up!**"
-    
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-async def delete_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    parts = update.message.text.split(" ")
-    
-    if len(parts) < 2:
-        await update.message.reply_text(
-            "❌ **Usage:** `/delete [name]`\n\nExample: `/delete John`",
-            parse_mode="Markdown"
-        )
+        
+        send_telegram(chat_id, f"📤 **Reminder sent for {name}**\n\n💳 Amount: ₹{client.get('amount', 0)}")
+        send_telegram(chat_id, reminder_msg)
         return
     
-    name = " ".join(parts[1:])
-    clients = get_clients(user_id)
-    client = next((c for c in clients if c.get("name") == name), None)
-    
-    if not client:
-        await update.message.reply_text(f"❌ Client **{name}** not found.", parse_mode="Markdown")
+    # /status
+    if command == "/status":
+        clients = get_clients(user_id)
+        active_clients = [c for c in clients if c.get("amount", 0) > 0]
+        total = sum(c.get("amount", 0) for c in active_clients)
+        
+        msg = f"💰 **Financial Status**\n\n"
+        msg += f"📊 **Total Pending:** ₹{total}\n"
+        msg += f"👤 **Active Clients:** {len(active_clients)}\n"
+        msg += f"📋 **Total Clients:** {len(clients)}\n\n"
+        
+        if active_clients:
+            highest = sorted(active_clients, key=lambda x: x.get("amount", 0), reverse=True)[0]
+            msg += f"🏆 **Highest:** {highest.get('name', 'N/A')} (₹{highest.get('amount', 0)})"
+        else:
+            msg += f"🎉 **All clients paid up!**"
+        
+        send_telegram(chat_id, msg)
         return
     
-    amount = client.get("amount", 0)
-    if remove_client(user_id, name):
-        await update.message.reply_text(
-            f"🗑️ **{name}** removed!\n\n"
-            f"💳 ₹{amount} removed from pending.\n"
-            f"📊 **Remaining Total:** ₹{get_total_pending(user_id)}",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text("❌ Something went wrong. Please try again.")
-
-async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    clients = get_clients(user_id)
-    
-    if not clients:
-        await update.message.reply_text("📭 No clients to delete.")
+    # /delete
+    if command == "/delete":
+        if len(parts) < 2:
+            send_telegram(chat_id, "❌ **Usage:** `/delete [name]`\n\nExample: `/delete John`")
+            return
+        
+        name = " ".join(parts[1:])
+        clients = get_clients(user_id)
+        client = next((c for c in clients if c.get("name") == name), None)
+        
+        if not client:
+            send_telegram(chat_id, f"❌ Client **{name}** not found.")
+            return
+        
+        amount = client.get("amount", 0)
+        if remove_client(user_id, name):
+            send_telegram(chat_id, f"🗑️ **{name}** removed!\n\n💳 ₹{amount} removed from pending.\n📊 **Remaining Total:** ₹{get_total_pending(user_id)}")
+        else:
+            send_telegram(chat_id, "❌ Something went wrong. Please try again.")
         return
     
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ Yes, Delete All", callback_data="confirm_reset"),
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel_reset")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"⚠️ **WARNING:** This will delete ALL {len(clients)} clients.\n\n"
-        f"Total pending: ₹{sum(c.get('amount', 0) for c in clients)}\n\n"
-        f"Are you sure?",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
-    )
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = update.effective_user.id
-    
-    if query.data == "confirm_reset":
+    # /reset
+    if command == "/reset":
+        clients = get_clients(user_id)
+        if not clients:
+            send_telegram(chat_id, "📭 No clients to delete.")
+            return
+        
         delete_all_clients(user_id)
-        await query.edit_message_text(
-            "🗑️ **All clients deleted!**\n\nYour data has been cleared.",
-            parse_mode="Markdown"
-        )
-    elif query.data == "cancel_reset":
-        await query.edit_message_text(
-            "✅ Reset cancelled. Your data is safe.",
-            parse_mode="Markdown"
-        )
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if not text:
+        send_telegram(chat_id, "🗑️ **All clients deleted!**\n\nYour data has been cleared.")
         return
     
-    if text.startswith('/'):
-        await update.message.reply_text(
-            f"🤖 Unknown command: `{text}`\n\nType `/help` to see all available commands.",
-            parse_mode="Markdown"
-        )
-        return
-    
-    await update.message.reply_text(
-        "🤖 I'm a credit tracker bot. Please use the following commands:\n\n"
-        "/add [name] [amount] - Add a client\n"
-        "/list - Show all clients\n"
-        "/paid [name] - Mark as paid\n"
-        "/help - Show all commands",
-        parse_mode="Markdown"
-    )
+    # Unknown command
+    send_telegram(chat_id, f"🤖 Unknown command: `{text}`\n\nType `/help` to see all available commands.")
 
-# ============ CREATE APPLICATION ============
-telegram_app = Application.builder().token(BOT_TOKEN).build()
-
-# Register all handlers
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("help", help_command))
-telegram_app.add_handler(CommandHandler("add", add_client_command))
-telegram_app.add_handler(CommandHandler("list", list_clients))
-telegram_app.add_handler(CommandHandler("paid", paid_command))
-telegram_app.add_handler(CommandHandler("remind", remind_command))
-telegram_app.add_handler(CommandHandler("status", status_command))
-telegram_app.add_handler(CommandHandler("delete", delete_client))
-telegram_app.add_handler(CommandHandler("reset", reset_command))
-telegram_app.add_handler(CallbackQueryHandler(button_callback))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-# ============ FLASK WEBHOOK ROUTE ============
+# ============ FLASK WEBHOOK ============
 @app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     try:
         data = request.get_json(force=True)
-        update = Update.de_json(data, telegram_app.bot)
-        # Use a synchronous process_update method
-        telegram_app.process_update(update)
+        
+        # Extract message
+        message = data.get("message", {})
+        if not message:
+            return jsonify({"status": "ok"}), 200
+        
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text", "")
+        user_id = message.get("from", {}).get("id")
+        
+        if not chat_id or not text:
+            return jsonify({"status": "ok"}), 200
+        
+        # Handle the command
+        handle_command(chat_id, text, user_id)
+        
         return jsonify({"status": "ok"}), 200
     except Exception as e:
         print(f"Error: {e}")
@@ -436,25 +352,6 @@ def index():
         "status": "Credit Tracker Bot is running!",
         "creator": "@Introspection007"
     })
-
-# ============ SETUP WEBHOOK ============
-def set_webhook():
-    vercel_url = os.environ.get("VERCEL_URL")
-    if vercel_url:
-        webhook_url = f"https://{vercel_url}/webhook/{BOT_TOKEN}"
-        try:
-            # Set webhook synchronously
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(telegram_app.bot.set_webhook(url=webhook_url))
-            loop.close()
-            print(f"✅ Webhook set to: {webhook_url}")
-        except Exception as e:
-            print(f"Webhook error: {e}")
-
-if os.environ.get("VERCEL"):
-    set_webhook()
 
 if __name__ == "__main__":
     app.run()
