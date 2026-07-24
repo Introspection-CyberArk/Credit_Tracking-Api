@@ -14,11 +14,17 @@ SUPABASE_URL = "https://vqqkfongtzjjhiagmxcn.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxcWtmb25ndHpqamhpYWdteGNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4OTg4NDAsImV4cCI6MjEwMDQ3NDg0MH0.44ZTRCPZdid_yccX2jlif6yDuntinIFi-e1psPgBdb8"
 
 # Initialize Supabase
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-print("✅ Supabase connected!")
+try:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Supabase connected!")
+except Exception as e:
+    print(f"❌ Supabase error: {e}")
+    supabase = None
 
 # ============ DATABASE FUNCTIONS ============
 def get_clients(user_id):
+    if not supabase:
+        return []
     try:
         result = supabase.table("clients").select("*").eq("user_id", user_id).order("name").execute()
         return result.data if result.data else []
@@ -27,6 +33,8 @@ def get_clients(user_id):
         return []
 
 def add_client(user_id, name, amount):
+    if not supabase:
+        return "error", 0, 0
     try:
         existing = supabase.table("clients").select("*").eq("user_id", user_id).eq("name", name).execute()
         if existing.data:
@@ -50,6 +58,8 @@ def add_client(user_id, name, amount):
         return "error", 0, 0
 
 def remove_client(user_id, name):
+    if not supabase:
+        return False
     try:
         supabase.table("clients").delete().eq("user_id", user_id).eq("name", name).execute()
         return True
@@ -57,6 +67,8 @@ def remove_client(user_id, name):
         return False
 
 def mark_paid(user_id, name):
+    if not supabase:
+        return False
     try:
         supabase.table("clients").update({
             "amount": 0,
@@ -67,6 +79,8 @@ def mark_paid(user_id, name):
         return False
 
 def get_total_pending(user_id):
+    if not supabase:
+        return 0
     try:
         result = supabase.table("clients").select("amount").eq("user_id", user_id).execute()
         return sum(c["amount"] for c in result.data) if result.data else 0
@@ -74,6 +88,8 @@ def get_total_pending(user_id):
         return 0
 
 def delete_all_clients(user_id):
+    if not supabase:
+        return False
     try:
         supabase.table("clients").delete().eq("user_id", user_id).execute()
         return True
@@ -385,7 +401,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ============ CREATE APPLICATION WITH INITIALIZATION ============
+# ============ CREATE APPLICATION ============
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
 # Register all handlers
@@ -405,11 +421,8 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_
 @app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     try:
-        # Get the update data
         data = request.get_json(force=True)
-        # Create Update object
         update = Update.de_json(data, telegram_app.bot)
-        # Process the update (this is synchronous now)
         telegram_app.process_update(update)
         return jsonify({"status": "ok"}), 200
     except Exception as e:
@@ -423,7 +436,7 @@ def index():
         "creator": "@Introspection007"
     })
 
-# ============ SETUP WEBHOOK ON STARTUP ============
+# ============ SETUP WEBHOOK ============
 def set_webhook():
     vercel_url = os.environ.get("VERCEL_URL")
     if vercel_url:
