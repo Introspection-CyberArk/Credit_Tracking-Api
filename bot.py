@@ -12,20 +12,85 @@ SUPABASE_URL = "https://vqqkfongtzjjhiagmxcn.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxcWtmb25ndHpqamhpYWdteGNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4OTg4NDAsImV4cCI6MjEwMDQ3NDg0MH0.44ZTRCPZdid_yccX2jlif6yDuntinIFi-e1psPgBdb8"
 
 # ============ TELEGRAM SEND FUNCTION ============
-def send_telegram(chat_id, text, parse_mode='Markdown'):
-    """Send message to Telegram"""
+def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": parse_mode
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         response = requests.post(url, json=payload, timeout=10)
         return response.json()
     except Exception as e:
         print(f"Send error: {e}")
         return None
+
+def send_telegram_menu(chat_id):
+    """Send the main menu with buttons"""
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "➕ Add Client", "callback_data": "add_client"},
+                {"text": "📋 List Clients", "callback_data": "list_clients"}
+            ],
+            [
+                {"text": "✅ Mark Paid", "callback_data": "mark_paid"},
+                {"text": "🔔 Send Reminder", "callback_data": "send_reminder"}
+            ],
+            [
+                {"text": "💰 Status", "callback_data": "status"},
+                {"text": "🗑️ Reset All", "callback_data": "reset_all"}
+            ],
+            [
+                {"text": "❓ Help", "callback_data": "help"}
+            ]
+        ]
+    }
+    
+    welcome = f"""💰 **Credit Tracker Bot**
+
+Welcome! Tap a button below to manage your clients.
+
+━━━━━━━━━━━━━━━━━━━━━
+🤖 **Powered By @Introspection007**"""
+    
+    send_telegram(chat_id, welcome, reply_markup=json.dumps(keyboard))
+
+def edit_telegram_message(chat_id, message_id, text, reply_markup=None):
+    """Edit an existing message"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json()
+    except Exception as e:
+        print(f"Edit error: {e}")
+        return None
+
+def answer_callback(callback_id, text=None):
+    """Answer callback query"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_id}
+    if text:
+        payload["text"] = text
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except:
+        pass
+
+def get_user_id_from_callback(callback_query):
+    """Extract user_id from callback"""
+    return callback_query.get("from", {}).get("id")
 
 # ============ SUPABASE FUNCTIONS ============
 def supabase_request(method, table, params=None, data=None):
@@ -52,7 +117,7 @@ def supabase_request(method, table, params=None, data=None):
         if response.status_code in [200, 201, 204]:
             return response.json() if response.text else []
         else:
-            print(f"Supabase error: {response.status_code}")
+            print(f"Supabase error: {response.status_code} - {response.text}")
             return None
     except Exception as e:
         print(f"Supabase error: {e}")
@@ -64,6 +129,7 @@ def get_clients(user_id):
     return result if result else []
 
 def add_client(user_id, name, amount):
+    # Check if client exists
     existing = get_clients(user_id)
     for client in existing:
         if client.get("name") == name:
@@ -112,17 +178,14 @@ def handle_command(chat_id, text, user_id):
     parts = text.strip().split(" ")
     command = parts[0].lower()
     
-    # /start
+    # /start - Show menu
     if command == "/start":
-        total = get_total_pending(user_id)
-        clients = get_clients(user_id)
-        welcome = f"""💰 **Credit Tracker Bot**
-
-Welcome! I help you track client payments.
-
-📊 **Current Status:**
-• Total Pending: ₹{total}
-• Active Clients: {len(clients)}
+        send_telegram_menu(chat_id)
+        return
+    
+    # /help
+    if command == "/help":
+        help_text = """💰 **Credit Tracker Bot**
 
 **Commands:**
 /add [name] [amount] - Add client
@@ -134,30 +197,8 @@ Welcome! I help you track client payments.
 /reset - Delete ALL clients
 /help - Show this menu
 
-**Example:** `/add John 5000`
-
-━━━━━━━━━━━━━━━━━━━━━
-🤖 **Powered By @Introspection007**"""
-        send_telegram(chat_id, welcome)
-        return
-    
-    # /help
-    if command == "/help":
-        help_text = """💰 **Credit Tracker Bot**
-
-**Commands:**
-/add [name] [amount] - Add client with pending payment
-/list - Show all pending clients
-/paid [name] - Mark client as paid
-/remind [name] - Send payment reminder
-/status - Show total pending
-/delete [name] - Remove client
-/reset - Delete ALL clients
-/help - Show this menu
-
 **Example:**
 /add John 5000
-/remind John
 
 ━━━━━━━━━━━━━━━━━━━━━
 🤖 **Powered By @Introspection007**"""
@@ -320,38 +361,188 @@ Please settle at your earliest convenience. Thank you! 🙏
     # Unknown command
     send_telegram(chat_id, f"🤖 Unknown command: `{text}`\n\nType `/help` to see all available commands.")
 
-# ============ FLASK WEBHOOK ============
-@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    try:
-        data = request.get_json(force=True)
+# ============ CALLBACK HANDLERS ============
+def handle_callback(callback_query):
+    """Handle button clicks"""
+    callback_id = callback_query.get("id")
+    data = callback_query.get("data")
+    chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
+    message_id = callback_query.get("message", {}).get("message_id")
+    user_id = get_user_id_from_callback(callback_query)
+    
+    answer_callback(callback_id)
+    
+    if data == "add_client":
+        edit_telegram_message(chat_id, message_id, 
+            "➕ **Add Client**\n\nSend the client name and amount like this:\n\n`John 5000`\n\n(Just type it as a message, not as a command)")
+        return
+    
+    elif data == "list_clients":
+        clients = get_clients(user_id)
+        active_clients = [c for c in clients if c.get("amount", 0) > 0]
         
-        # Extract message
-        message = data.get("message", {})
-        if not message:
-            return jsonify({"status": "ok"}), 200
+        if not active_clients:
+            edit_telegram_message(chat_id, message_id, "📭 **No pending clients**\n\nAll clients are paid up! 🎉\n\n[Tap here to go back](t.me/credit_tracker_bot)")
+            return
         
-        chat_id = message.get("chat", {}).get("id")
-        text = message.get("text", "")
-        user_id = message.get("from", {}).get("id")
+        msg = "📋 **Pending Clients**\n\n"
+        total = 0
+        for i, client in enumerate(sorted(active_clients, key=lambda x: x.get("amount", 0), reverse=True), 1):
+            msg += f"{i}. **{client.get('name', 'N/A')}**: ₹{client.get('amount', 0)}\n"
+            total += client.get("amount", 0)
         
-        if not chat_id or not text:
-            return jsonify({"status": "ok"}), 200
+        msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💰 **Total:** ₹{total}"
+        msg += f"\n👤 **Clients:** {len(active_clients)}"
         
-        # Handle the command
-        handle_command(chat_id, text, user_id)
+        edit_telegram_message(chat_id, message_id, msg)
+        return
+    
+    elif data == "mark_paid":
+        clients = get_clients(user_id)
+        active_clients = [c for c in clients if c.get("amount", 0) > 0]
         
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        print(f"Error: {e}")
-        return jsonify({"status": "error"}), 500
+        if not active_clients:
+            edit_telegram_message(chat_id, message_id, "📭 No pending clients to mark as paid.")
+            return
+        
+        # Create buttons for each client
+        keyboard = {"inline_keyboard": []}
+        for client in active_clients:
+            keyboard["inline_keyboard"].append([
+                {"text": f"✅ {client.get('name')} (₹{client.get('amount', 0)})", "callback_data": f"paid_{client.get('name')}"}
+            ])
+        keyboard["inline_keyboard"].append([
+            {"text": "🔙 Back to Menu", "callback_data": "menu"}
+        ])
+        
+        edit_telegram_message(chat_id, message_id, 
+            "✅ **Mark as Paid**\n\nSelect a client to mark as paid:", 
+            reply_markup=json.dumps(keyboard))
+        return
+    
+    elif data == "send_reminder":
+        clients = get_clients(user_id)
+        active_clients = [c for c in clients if c.get("amount", 0) > 0]
+        
+        if not active_clients:
+            edit_telegram_message(chat_id, message_id, "📭 No clients to remind.")
+            return
+        
+        keyboard = {"inline_keyboard": []}
+        for client in active_clients:
+            keyboard["inline_keyboard"].append([
+                {"text": f"🔔 {client.get('name')} (₹{client.get('amount', 0)})", "callback_data": f"remind_{client.get('name')}"}
+            ])
+        keyboard["inline_keyboard"].append([
+            {"text": "🔙 Back to Menu", "callback_data": "menu"}
+        ])
+        
+        edit_telegram_message(chat_id, message_id, 
+            "🔔 **Send Reminder**\n\nSelect a client to remind:", 
+            reply_markup=json.dumps(keyboard))
+        return
+    
+    elif data == "status":
+        clients = get_clients(user_id)
+        active_clients = [c for c in clients if c.get("amount", 0) > 0]
+        total = sum(c.get("amount", 0) for c in active_clients)
+        
+        msg = f"💰 **Financial Status**\n\n"
+        msg += f"📊 **Total Pending:** ₹{total}\n"
+        msg += f"👤 **Active Clients:** {len(active_clients)}\n"
+        msg += f"📋 **Total Clients:** {len(clients)}\n\n"
+        
+        if active_clients:
+            highest = sorted(active_clients, key=lambda x: x.get("amount", 0), reverse=True)[0]
+            msg += f"🏆 **Highest:** {highest.get('name', 'N/A')} (₹{highest.get('amount', 0)})"
+        else:
+            msg += f"🎉 **All clients paid up!**"
+        
+        edit_telegram_message(chat_id, message_id, msg)
+        return
+    
+    elif data == "reset_all":
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Yes, Delete All", "callback_data": "confirm_reset"},
+                    {"text": "❌ Cancel", "callback_data": "menu"}
+                ]
+            ]
+        }
+        edit_telegram_message(chat_id, message_id, 
+            "⚠️ **WARNING:** This will delete ALL clients.\n\nAre you sure?", 
+            reply_markup=json.dumps(keyboard))
+        return
+    
+    elif data == "confirm_reset":
+        delete_all_clients(user_id)
+        edit_telegram_message(chat_id, message_id, "🗑️ **All clients deleted!**\n\nYour data has been cleared.")
+        return
+    
+    elif data == "help":
+        help_text = """💰 **Credit Tracker Bot**
 
-@app.route("/", methods=["GET"])
-def index():
-    return jsonify({
-        "status": "Credit Tracker Bot is running!",
-        "creator": "@Introspection007"
-    })
+**Features:**
+• Add clients with pending amounts
+• List all pending clients
+• Mark clients as paid
+• Send reminders
+• Track total pending
 
-if __name__ == "__main__":
-    app.run()
+**Commands:**
+/add [name] [amount] - Add client
+/list - Show all clients
+/paid [name] - Mark as paid
+/remind [name] - Send reminder
+/status - Show total
+/delete [name] - Remove client
+/reset - Delete ALL clients
+
+━━━━━━━━━━━━━━━━━━━━━
+🤖 **Powered By @Introspection007**"""
+        edit_telegram_message(chat_id, message_id, help_text)
+        return
+    
+    elif data == "menu":
+        send_telegram_menu(chat_id)
+        return
+    
+    # Handle "paid_*" callback
+    elif data.startswith("paid_"):
+        name = data.replace("paid_", "")
+        clients = get_clients(user_id)
+        client = next((c for c in clients if c.get("name") == name), None)
+        
+        if not client:
+            edit_telegram_message(chat_id, message_id, f"❌ Client **{name}** not found.")
+            return
+        
+        if client.get("amount", 0) == 0:
+            edit_telegram_message(chat_id, message_id, f"✅ **{name}** is already paid up! 🎉")
+            return
+        
+        if mark_paid(user_id, name):
+            edit_telegram_message(chat_id, message_id, 
+                f"✅ **{name}** marked as paid!\n\n💳 ₹{client.get('amount', 0)} cleared.\n📊 **Remaining Total:** ₹{get_total_pending(user_id)}")
+        else:
+            edit_telegram_message(chat_id, message_id, "❌ Something went wrong. Please try again.")
+        return
+    
+    # Handle "remind_*" callback
+    elif data.startswith("remind_"):
+        name = data.replace("remind_", "")
+        clients = get_clients(user_id)
+        client = next((c for c in clients if c.get("name") == name), None)
+        
+        if not client:
+            edit_telegram_message(chat_id, message_id, f"❌ Client **{name}** not found.")
+            return
+        
+        if client.get("amount", 0) == 0:
+            edit_telegram_message(chat_id, message_id, f"✅ **{name}** doesn't have any pending amount.")
+            return
+        
+        reminder_msg = f"""🔔 **Reminder for {name}**
+
+Hi 
