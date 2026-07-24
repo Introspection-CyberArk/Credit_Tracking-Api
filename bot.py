@@ -87,15 +87,15 @@ def update_client_amount_supabase(name, amount):
         return False
 
 def delete_all_clients_supabase():
-    """Delete ALL clients from Supabase"""
-    url = f"{SUPABASE_URL}/rest/v1/clients"
+    """Delete ALL clients from Supabase using condition"""
+    # Method 1: Delete with condition (name is not null)
+    url = f"{SUPABASE_URL}/rest/v1/clients?name=neq.null"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json"
     }
     try:
-        # Use DELETE without filter - should delete all rows if RLS is disabled
         response = requests.delete(url, headers=headers, timeout=10)
         print(f"🗑️ Delete all response: {response.status_code} - {response.text}")
         return response.status_code in [200, 204]
