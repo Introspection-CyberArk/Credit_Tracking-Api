@@ -23,7 +23,6 @@ def add_client_supabase(name, amount):
         "Content-Type": "application/json",
         "Prefer": "return=representation"
     }
-    # Force amount to integer
     data = {"name": name, "amount": int(amount)}
     
     try:
@@ -88,7 +87,7 @@ def update_client_amount_supabase(name, amount):
         return False
 
 def delete_all_clients_supabase():
-    """Delete all clients"""
+    """Delete ALL clients from Supabase"""
     url = f"{SUPABASE_URL}/rest/v1/clients"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -96,9 +95,12 @@ def delete_all_clients_supabase():
         "Content-Type": "application/json"
     }
     try:
+        # Use DELETE without filter - should delete all rows if RLS is disabled
         response = requests.delete(url, headers=headers, timeout=10)
+        print(f"🗑️ Delete all response: {response.status_code} - {response.text}")
         return response.status_code in [200, 204]
-    except:
+    except Exception as e:
+        print(f"❌ Delete all error: {e}")
         return False
 
 # ============ TELEGRAM FUNCTIONS ============
@@ -237,8 +239,10 @@ def handle_callback(callback_query):
         return
 
     elif data == "confirm_reset":
-        delete_all_clients_supabase()
-        send_menu(chat_id, "🗑️ **All clients deleted!**")
+        if delete_all_clients_supabase():
+            send_menu(chat_id, "🗑️ **All clients deleted successfully!**")
+        else:
+            send_menu(chat_id, "❌ Failed to delete all clients. Please try again.")
         return
 
     elif data == "help":
@@ -429,8 +433,10 @@ Please settle at your earliest convenience. Thank you! 🙏
         
         # Handle /reset command
         if text == "/reset":
-            delete_all_clients_supabase()
-            send_menu(chat_id, "🗑️ **All clients deleted!**")
+            if delete_all_clients_supabase():
+                send_menu(chat_id, "🗑️ **All clients deleted successfully!**")
+            else:
+                send_menu(chat_id, "❌ Failed to delete all clients. Please try again.")
             return jsonify({"status": "ok"}), 200
         
         # If not a command, treat as "name amount"
