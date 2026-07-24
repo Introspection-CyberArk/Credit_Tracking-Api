@@ -1,7 +1,6 @@
 import os
 import json
 import requests
-import time
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -10,138 +9,116 @@ app = Flask(__name__)
 # ============ CONFIGURATION ============
 BOT_TOKEN = "8958327625:AAE6B5kypZyXEFDaEx93FgT1nzyVR_6l_Fc"
 
-# Your JSONBin Credentials
-JSONBIN_API_KEY = "$2a$10$qqjGIWOcISCJp9wWNKj8fep9p3E2q4Pjz0DeTC/QHXkPahLr24Uta"
-JSONBIN_BIN_ID = "6a63a302da38895dfe8b001f"
+# Supabase Configuration (Using your existing credentials)
+SUPABASE_URL = "https://vqqkfongtzjjhiagmxcn.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxcWtmb25ndHpqamhpYWdteGNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4OTg4NDAsImV4cCI6MjEwMDQ3NDg0MH0.44ZTRCPZdid_yccX2jlif6yDuntinIFi-e1psPgBdb8"
 
-# ============ JSONBIN DATABASE FUNCTIONS ============
-def load_data(retries=3):
-    """Load data from JSONBin with retry"""
-    url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
+# ============ SUPABASE HTTP API FUNCTIONS ============
+def supabase_query(table, params=None, data=None, method="GET"):
+    """Direct HTTP request to Supabase"""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
     headers = {
-        "X-Master-Key": JSONBIN_API_KEY,
-        "Content-Type": "application/json"
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
     }
     
-    for attempt in range(retries):
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                record = data.get("record", {})
-                print(f"✅ Data loaded: {record}")
-                return record
-            else:
-                print(f"Load attempt {attempt+1} failed: {response.status_code}")
-                time.sleep(1)
-        except Exception as e:
-            print(f"Load attempt {attempt+1} error: {e}")
-            time.sleep(1)
-    
-    print("❌ All load attempts failed")
-    return {}
+    try:
+        if method == "GET":
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+        elif method == "POST":
+            response = requests.post(url, headers=headers, json=data, timeout=10)
+        elif method == "PATCH":
+            response = requests.patch(url, headers=headers, json=data, params=params, timeout=10)
+        elif method == "DELETE":
+            response = requests.delete(url, headers=headers, params=params, timeout=10)
+        else:
+            return None
+        
+        if response.status_code in [200, 201, 204]:
+            return response.json() if response.text else []
+        else:
+            print(f"Supabase error: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        print(f"Supabase error: {e}")
+        return None
 
-def save_data(data, retries=3):
-    """Save data to JSONBin with retry"""
-    url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
-    headers = {
-        "X-Master-Key": JSONBIN_API_KEY,
-        "Content-Type": "application/json"
-    }
-    
-    for attempt in range(retries):
-        try:
-            response = requests.put(url, json=data, headers=headers, timeout=10)
-            if response.status_code == 200:
-                print(f"✅ Data saved: {data}")
-                return True
-            else:
-                print(f"Save attempt {attempt+1} failed: {response.status_code}")
-                time.sleep(1)
-        except Exception as e:
-            print(f"Save attempt {attempt+1} error: {e}")
-            time.sleep(1)
-    
-    print("❌ All save attempts failed")
-    return False
+def create_table_if_not_exists():
+    """Create the clients table if it doesn't exist"""
+    # We'll use a simple approach - try to insert and handle error
+    sql = """
+    CREATE TABLE IF NOT EXISTS clients (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        name TEXT NOT NULL,
+        amount INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+    );
+    """
+    # Since Supabase REST API doesn't support raw SQL directly,
+    # we'll use the SQL Editor in the dashboard manually
+    print("⚠️ Please create the 'clients' table in Supabase SQL Editor with the above query")
+    return True
 
 def get_clients(user_id):
     """Get all clients for a user"""
-    data = load_data()
-    user_key = str(user_id)
-    clients = data.get(user_key, [])
-    print(f"📊 Retrieved {len(clients)} clients for user {user_id}")
-    return clients
+    params = {"user_id": f"eq.{user_id}", "order": "name.asc"}
+    result = supabase_query("clients", params=params)
+    return result if result else []
 
 def add_client(user_id, name, amount):
     """Add or update a client"""
-    data = load_data()
-    user_key = str(user_id)
-    
-    if user_key not in data:
-        data[user_key] = []
-    
     # Check if client exists
-    for client in data[user_key]:
-        if client.get("name").lower() == name.lower():
-            old_amount = client.get("amount", 0)
-            client["amount"] = old_amount + amount
-            client["updated_at"] = datetime.now().isoformat()
-            if save_data(data):
-                return "updated", old_amount, client["amount"]
-            return "error", 0, 0
+    params = {"user_id": f"eq.{user_id}", "name": f"eq.{name}"}
+    existing = supabase_query("clients", params=params)
+    
+    if existing and len(existing) > 0:
+        old_amount = existing[0].get("amount", 0)
+        new_amount = old_amount + amount
+        data = {"amount": new_amount, "updated_at": datetime.now().isoformat()}
+        params = {"id": f"eq.{existing[0]['id']}"}
+        result = supabase_query("clients", data=data, params=params, method="PATCH")
+        if result is not None:
+            return "updated", old_amount, new_amount
+        return "error", 0, 0
     
     # Add new client
-    data[user_key].append({
+    data = {
+        "user_id": user_id,
         "name": name,
         "amount": amount,
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat()
-    })
-    if save_data(data):
+    }
+    result = supabase_query("clients", data=data, method="POST")
+    if result is not None:
         return "added", 0, amount
     return "error", 0, 0
 
 def mark_paid(user_id, name):
     """Mark a client as paid"""
-    data = load_data()
-    user_key = str(user_id)
-    
-    if user_key not in data:
-        return False
-    
-    for client in data[user_key]:
-        if client.get("name").lower() == name.lower():
-            client["amount"] = 0
-            client["updated_at"] = datetime.now().isoformat()
-            return save_data(data)
-    return False
+    params = {"user_id": f"eq.{user_id}", "name": f"eq.{name}"}
+    data = {"amount": 0, "updated_at": datetime.now().isoformat()}
+    result = supabase_query("clients", data=data, params=params, method="PATCH")
+    return result is not None
 
 def remove_client(user_id, name):
     """Remove a client completely"""
-    data = load_data()
-    user_key = str(user_id)
-    
-    if user_key not in data:
-        return False
-    
-    for i, client in enumerate(data[user_key]):
-        if client.get("name").lower() == name.lower():
-            del data[user_key][i]
-            return save_data(data)
-    return False
+    params = {"user_id": f"eq.{user_id}", "name": f"eq.{name}"}
+    result = supabase_query("clients", params=params, method="DELETE")
+    return result is not None
 
 def get_total_pending(user_id):
     clients = get_clients(user_id)
     return sum(c.get("amount", 0) for c in clients)
 
 def delete_all_clients(user_id):
-    data = load_data()
-    user_key = str(user_id)
-    if user_key in data:
-        del data[user_key]
-        return save_data(data)
-    return True
+    params = {"user_id": f"eq.{user_id}"}
+    result = supabase_query("clients", params=params, method="DELETE")
+    return result is not None
 
 # ============ TELEGRAM FUNCTIONS ============
 def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
@@ -150,9 +127,12 @@ def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = reply_markup
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10)
+        print(f"Send response: {response.status_code}")
+        return response.json()
     except Exception as e:
         print(f"Send error: {e}")
+        return None
 
 def send_menu(chat_id, text=None):
     keyboard = {
