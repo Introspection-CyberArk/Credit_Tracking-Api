@@ -14,14 +14,12 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 # ============ TELEGRAM FUNCTIONS ============
 def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
-    """Send message to Telegram"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
     if reply_markup:
         payload["reply_markup"] = reply_markup
     try:
         response = requests.post(url, json=payload, timeout=10)
-        print(f"Send response: {response.status_code}")
         return response.json()
     except Exception as e:
         print(f"Send error: {e}")
@@ -49,7 +47,6 @@ Tap a button below to manage your clients.
     send_telegram(chat_id, welcome, reply_markup=json.dumps(keyboard))
 
 def edit_message(chat_id, message_id, text, reply_markup=None):
-    """Edit an existing message"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
     payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "Markdown"}
     if reply_markup:
@@ -60,7 +57,6 @@ def edit_message(chat_id, message_id, text, reply_markup=None):
         print(f"Edit error: {e}")
 
 def answer_callback(callback_id):
-    """Answer callback query"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
     try:
         requests.post(url, json={"callback_query_id": callback_id}, timeout=5)
@@ -69,7 +65,6 @@ def answer_callback(callback_id):
 
 # ============ SUPABASE FUNCTIONS ============
 def supabase_request(method, table, params=None, data=None):
-    """Make direct HTTP request to Supabase"""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -77,7 +72,6 @@ def supabase_request(method, table, params=None, data=None):
         "Content-Type": "application/json",
         "Prefer": "return=representation"
     }
-    
     try:
         if method == "GET":
             response = requests.get(url, headers=headers, params=params, timeout=10)
@@ -89,7 +83,6 @@ def supabase_request(method, table, params=None, data=None):
             response = requests.delete(url, headers=headers, params=params, timeout=10)
         else:
             return None
-        
         if response.status_code in [200, 201, 204]:
             return response.json() if response.text else []
         else:
@@ -101,12 +94,16 @@ def supabase_request(method, table, params=None, data=None):
 
 def get_clients(user_id):
     """Get all clients for a user"""
+    print(f"📊 Fetching clients for user_id: {user_id}")
     params = {"user_id": f"eq.{user_id}", "order": "name.asc"}
     result = supabase_request("GET", "clients", params=params)
+    print(f"📊 Found {len(result) if result else 0} clients")
     return result if result else []
 
 def add_client(user_id, name, amount):
     """Add or update a client"""
+    print(f"➕ Adding client: user_id={user_id}, name={name}, amount={amount}")
+    
     # Check if client exists
     existing = get_clients(user_id)
     for client in existing:
@@ -125,11 +122,11 @@ def add_client(user_id, name, amount):
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat()
     }
-    supabase_request("POST", "clients", data=data)
+    result = supabase_request("POST", "clients", data=data)
+    print(f"➕ Add result: {result}")
     return "added", 0, amount
 
 def mark_paid(user_id, name):
-    """Mark a client as paid"""
     clients = get_clients(user_id)
     for client in clients:
         if client.get("name").lower() == name.lower():
@@ -140,25 +137,21 @@ def mark_paid(user_id, name):
     return False
 
 def remove_client(user_id, name):
-    """Remove a client completely"""
     params = {"user_id": f"eq.{user_id}", "name": f"eq.{name}"}
     supabase_request("DELETE", "clients", params=params)
     return True
 
 def get_total_pending(user_id):
-    """Get total pending amount"""
     clients = get_clients(user_id)
     return sum(c.get("amount", 0) for c in clients)
 
 def delete_all_clients(user_id):
-    """Delete all clients"""
     params = {"user_id": f"eq.{user_id}"}
     supabase_request("DELETE", "clients", params=params)
     return True
 
 # ============ CALLBACK HANDLERS ============
 def handle_callback(callback_query):
-    """Handle button clicks"""
     callback_id = callback_query.get("id")
     data = callback_query.get("data")
     chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
@@ -327,6 +320,8 @@ def webhook():
         if not chat_id or not text:
             return jsonify({"status": "ok"}), 200
         
+        print(f"📩 Message from user {user_id}: {text}")
+        
         # Commands
         if text == "/start":
             send_menu(chat_id)
@@ -358,6 +353,8 @@ def webhook():
                 send_telegram(chat_id, f"✅ **{name}** updated\n\n📈 ₹{old} → ₹{new}")
             else:
                 send_telegram(chat_id, "❌ Error adding client")
+            # Show menu after adding
+            send_menu(chat_id)
             return jsonify({"status": "ok"}), 200
         
         # /list command
