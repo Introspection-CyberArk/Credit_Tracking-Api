@@ -1,4 +1,3 @@
-from flask import Flask, request, jsonify
 import os
 import json
 from datetime import datetime
@@ -80,9 +79,6 @@ def delete_all_clients(user_id):
         return True
     except:
         return False
-
-# ============ TELEGRAM BOT SETUP ============
-telegram_app = Application.builder().token(BOT_TOKEN).build()
 
 # ============ BOT COMMANDS ============
 
@@ -389,7 +385,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ============ REGISTER HANDLERS ============
+# ============ CREATE APPLICATION WITH INITIALIZATION ============
+telegram_app = Application.builder().token(BOT_TOKEN).build()
+
+# Register all handlers
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CommandHandler("help", help_command))
 telegram_app.add_handler(CommandHandler("add", add_client_command))
@@ -404,10 +403,14 @@ telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_
 
 # ============ FLASK WEBHOOK ROUTE ============
 @app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
-async def webhook():
+def webhook():
     try:
-        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-        await telegram_app.process_update(update)
+        # Get the update data
+        data = request.get_json(force=True)
+        # Create Update object
+        update = Update.de_json(data, telegram_app.bot)
+        # Process the update (this is synchronous now)
+        telegram_app.process_update(update)
         return jsonify({"status": "ok"}), 200
     except Exception as e:
         print(f"Error: {e}")
