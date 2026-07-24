@@ -4,119 +4,130 @@ import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
 
-# ============ FLASK APP ============
 app = Flask(__name__)
 
 # ============ CONFIGURATION ============
 BOT_TOKEN = "8958327625:AAE6B5kypZyXEFDaEx93FgT1nzyVR_6l_Fc"
 
-# SQLite Cloud Configuration
-SQLITE_HOST = "ctv0adtedz.g6.sqlite.cloud"
-SQLITE_PORT = "8860"
-SQLITE_DB = "auth.sqlitecloud"
-SQLITE_API_KEY = "LapaWymijCaGztdjyip2yyH62DgGHVWaj8mvQ1378WE"
+# Your JSONBin Credentials
+JSONBIN_API_KEY = "$2a$10$qqjGIWOcISCJp9wWNKj8fep9p3E2q4Pjz0DeTC/QHXkPahLr24Uta"
+JSONBIN_BIN_ID = "6a63a302da38895dfe8b001f"
 
-# ============ SQLITE CLOUD HTTP API ============
-def sqlitecloud_query(sql, params=None):
-    """Execute a SQL query on SQLite Cloud via HTTP API"""
-    url = f"https://{SQLITE_HOST}:{SQLITE_PORT}/api/v1/query"
+# ============ JSONBIN DATABASE FUNCTIONS ============
+def load_data():
+    """Load data from JSONBin"""
+    url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
     headers = {
-        "Authorization": f"Bearer {SQLITE_API_KEY}",
+        "X-Master-Key": JSONBIN_API_KEY,
         "Content-Type": "application/json"
     }
-    payload = {
-        "database": SQLITE_DB,
-        "sql": sql,
-        "params": params if params else []
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ Data loaded: {data}")
+            return data.get("record", {})
+        else:
+            print(f"Load error: {response.status_code}")
+            return {}
+    except Exception as e:
+        print(f"Load error: {e}")
+        return {}
+
+def save_data(data):
+    """Save data to JSONBin"""
+    url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
+    headers = {
+        "X-Master-Key": JSONBIN_API_KEY,
+        "Content-Type": "application/json"
     }
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        response = requests.put(url, json=data, headers=headers, timeout=10)
         if response.status_code == 200:
-            return response.json()
+            print(f"✅ Data saved: {data}")
+            return True
         else:
-            print(f"SQLite Cloud error: {response.status_code} - {response.text}")
-            return None
+            print(f"Save error: {response.status_code} - {response.text}")
+            return False
     except Exception as e:
-        print(f"SQLite Cloud request error: {e}")
-        return None
-
-def init_database():
-    """Create the clients table if it doesn't exist"""
-    sql = """
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            amount REAL DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-    result = sqlitecloud_query(sql)
-    if result is not None:
-        print("✅ Database initialized!")
-        return True
-    print("❌ Database initialization failed!")
-    return False
+        print(f"Save error: {e}")
+        return False
 
 def get_clients(user_id):
     """Get all clients for a user"""
-    sql = "SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC"
-    result = sqlitecloud_query(sql, [user_id])
-    if result and "results" in result and len(result["results"]) > 0:
-        rows = result["results"][0].get("rows", [])
-        clients = []
-        for row in rows:
-            clients.append({
-                "id": row[0],
-                "user_id": row[1],
-                "name": row[2],
-                "amount": row[3]
-            })
-        return clients
-    return []
+    data = load_data()
+    user_key = str(user_id)
+    return data.get(user_key, [])
 
 def add_client(user_id, name, amount):
     """Add or update a client"""
+    data = load_data()
+    user_key = str(user_id)
+    
+    if user_key not in data:
+        data[user_key] = []
+    
     # Check if client exists
-    sql = "SELECT * FROM clients WHERE user_id = ? AND name = ?"
-    result = sqlitecloud_query(sql, [user_id, name])
-    if result and "results" in result and len(result["results"]) > 0:
-        rows = result["results"][0].get("rows", [])
-        if rows:
-            old_amount = rows[0][3]
-            new_amount = old_amount + amount
-            sql = "UPDATE clients SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-            sqlitecloud_query(sql, [new_amount, rows[0][0]])
-            return "updated", old_amount, new_amount
+    for client in data[user_key]:
+        if client.get("name").lower() == name.lower():
+            old_amount = client.get("amount", 0)
+            client["amount"] = old_amount + amount
+            client["updated_at"] = datetime.now().isoformat()
+            save_data(data)
+            return "updated", old_amount, client["amount"]
     
     # Add new client
-    sql = "INSERT INTO clients (user_id, name, amount) VALUES (?, ?, ?)"
-    result = sqlitecloud_query(sql, [user_id, name, amount])
-    if result is not None:
-        return "added", 0, amount
-    return "error", 0, 0
+    data[user_key].append({
+        "name": name,
+        "amount": amount,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat()
+    })
+    save_data(data)
+    return "added", 0, amount
 
 def mark_paid(user_id, name):
     """Mark a client as paid"""
-    sql = "UPDATE clients SET amount = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?"
-    result = sqlitecloud_query(sql, [user_id, name])
-    return result is not None
+    data = load_data()
+    user_key = str(user_id)
+    
+    if user_key not in data:
+        return False
+    
+    for client in data[user_key]:
+        if client.get("name").lower() == name.lower():
+            client["amount"] = 0
+            client["updated_at"] = datetime.now().isoformat()
+            save_data(data)
+            return True
+    return False
 
 def remove_client(user_id, name):
     """Remove a client completely"""
-    sql = "DELETE FROM clients WHERE user_id = ? AND name = ?"
-    result = sqlitecloud_query(sql, [user_id, name])
-    return result is not None
+    data = load_data()
+    user_key = str(user_id)
+    
+    if user_key not in data:
+        return False
+    
+    for i, client in enumerate(data[user_key]):
+        if client.get("name").lower() == name.lower():
+            del data[user_key][i]
+            save_data(data)
+            return True
+    return False
 
 def get_total_pending(user_id):
     clients = get_clients(user_id)
     return sum(c.get("amount", 0) for c in clients)
 
 def delete_all_clients(user_id):
-    sql = "DELETE FROM clients WHERE user_id = ?"
-    result = sqlitecloud_query(sql, [user_id])
-    return result is not None
+    data = load_data()
+    user_key = str(user_id)
+    if user_key in data:
+        del data[user_key]
+        save_data(data)
+    return True
 
 # ============ TELEGRAM FUNCTIONS ============
 def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
@@ -125,9 +136,12 @@ def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = reply_markup
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10)
+        print(f"Send response: {response.status_code}")
+        return response.json()
     except Exception as e:
         print(f"Send error: {e}")
+        return None
 
 def send_menu(chat_id, text=None):
     keyboard = {
@@ -331,6 +345,8 @@ def webhook():
         if not chat_id or not text:
             return jsonify({"status": "ok"}), 200
         
+        print(f"📩 Message from {user_id}: {text}")
+        
         if text == "/start":
             send_menu(chat_id)
             return jsonify({"status": "ok"}), 200
@@ -472,9 +488,6 @@ def index():
         "status": "Credit Tracker Bot is running!",
         "creator": "@Introspection007"
     })
-
-# ============ INITIALIZE DATABASE ============
-init_database()
 
 if __name__ == "__main__":
     app.run()
