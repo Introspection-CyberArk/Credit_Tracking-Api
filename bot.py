@@ -3,7 +3,6 @@ import json
 import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
-import sqlitecloud
 
 # ============ FLASK APP ============
 app = Flask(__name__)
@@ -11,151 +10,113 @@ app = Flask(__name__)
 # ============ CONFIGURATION ============
 BOT_TOKEN = "8958327625:AAE6B5kypZyXEFDaEx93FgT1nzyVR_6l_Fc"
 
-# SQLite Cloud Connection
-SQLITE_CLOUD_URL = "sqlitecloud://ctv0adtedz.g6.sqlite.cloud:8860/auth.sqlitecloud?apikey=LapaWymijCaGztdjyip2yyH62DgGHVWaj8mvQ1378WE"
+# SQLite Cloud Configuration
+SQLITE_HOST = "ctv0adtedz.g6.sqlite.cloud"
+SQLITE_PORT = "8860"
+SQLITE_DB = "auth.sqlitecloud"
+SQLITE_API_KEY = "LapaWymijCaGztdjyip2yyH62DgGHVWaj8mvQ1378WE"
 
-# ============ DATABASE FUNCTIONS ============
-def get_connection():
-    """Get SQLite Cloud connection"""
+# ============ SQLITE CLOUD HTTP API ============
+def sqlitecloud_query(sql, params=None):
+    """Execute a SQL query on SQLite Cloud via HTTP API"""
+    url = f"https://{SQLITE_HOST}:{SQLITE_PORT}/api/v1/query"
+    headers = {
+        "Authorization": f"Bearer {SQLITE_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "database": SQLITE_DB,
+        "sql": sql,
+        "params": params if params else []
+    }
     try:
-        conn = sqlitecloud.connect(SQLITE_CLOUD_URL)
-        return conn
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"SQLite Cloud error: {response.status_code} - {response.text}")
+            return None
     except Exception as e:
-        print(f"Connection error: {e}")
+        print(f"SQLite Cloud request error: {e}")
         return None
 
 def init_database():
     """Create the clients table if it doesn't exist"""
-    conn = get_connection()
-    if not conn:
-        print("❌ Failed to connect to SQLite Cloud!")
-        return False
-    
-    try:
-        cursor = conn.execute("""
-            CREATE TABLE IF NOT EXISTS clients (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                amount REAL DEFAULT 0,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.close()
+    sql = """
+        CREATE TABLE IF NOT EXISTS clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            amount REAL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+    result = sqlitecloud_query(sql)
+    if result is not None:
         print("✅ Database initialized!")
         return True
-    except Exception as e:
-        print(f"Database init error: {e}")
-        return False
+    print("❌ Database initialization failed!")
+    return False
 
 def get_clients(user_id):
     """Get all clients for a user"""
-    conn = get_connection()
-    if not conn:
-        return []
-    try:
-        cursor = conn.execute(
-            "SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC",
-            [user_id]
-        )
+    sql = "SELECT * FROM clients WHERE user_id = ? ORDER BY name ASC"
+    result = sqlitecloud_query(sql, [user_id])
+    if result and "results" in result and len(result["results"]) > 0:
+        rows = result["results"][0].get("rows", [])
         clients = []
-        for row in cursor.fetchall():
+        for row in rows:
             clients.append({
                 "id": row[0],
                 "user_id": row[1],
                 "name": row[2],
                 "amount": row[3]
             })
-        conn.close()
         return clients
-    except Exception as e:
-        print(f"Get clients error: {e}")
-        return []
+    return []
 
 def add_client(user_id, name, amount):
     """Add or update a client"""
-    conn = get_connection()
-    if not conn:
-        return "error", 0, 0
-    
-    try:
-        # Check if client exists
-        cursor = conn.execute(
-            "SELECT * FROM clients WHERE user_id = ? AND name = ?",
-            [user_id, name]
-        )
-        row = cursor.fetchone()
-        
-        if row:
-            old_amount = row[3]
+    # Check if client exists
+    sql = "SELECT * FROM clients WHERE user_id = ? AND name = ?"
+    result = sqlitecloud_query(sql, [user_id, name])
+    if result and "results" in result and len(result["results"]) > 0:
+        rows = result["results"][0].get("rows", [])
+        if rows:
+            old_amount = rows[0][3]
             new_amount = old_amount + amount
-            conn.execute(
-                "UPDATE clients SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                [new_amount, row[0]]
-            )
-            conn.close()
+            sql = "UPDATE clients SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            sqlitecloud_query(sql, [new_amount, rows[0][0]])
             return "updated", old_amount, new_amount
-        else:
-            conn.execute(
-                "INSERT INTO clients (user_id, name, amount) VALUES (?, ?, ?)",
-                [user_id, name, amount]
-            )
-            conn.close()
-            return "added", 0, amount
-    except Exception as e:
-        print(f"Add client error: {e}")
-        return "error", 0, 0
+    
+    # Add new client
+    sql = "INSERT INTO clients (user_id, name, amount) VALUES (?, ?, ?)"
+    result = sqlitecloud_query(sql, [user_id, name, amount])
+    if result is not None:
+        return "added", 0, amount
+    return "error", 0, 0
 
 def mark_paid(user_id, name):
     """Mark a client as paid"""
-    conn = get_connection()
-    if not conn:
-        return False
-    try:
-        conn.execute(
-            "UPDATE clients SET amount = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?",
-            [user_id, name]
-        )
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Mark paid error: {e}")
-        return False
+    sql = "UPDATE clients SET amount = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND name = ?"
+    result = sqlitecloud_query(sql, [user_id, name])
+    return result is not None
 
 def remove_client(user_id, name):
     """Remove a client completely"""
-    conn = get_connection()
-    if not conn:
-        return False
-    try:
-        conn.execute(
-            "DELETE FROM clients WHERE user_id = ? AND name = ?",
-            [user_id, name]
-        )
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Remove client error: {e}")
-        return False
+    sql = "DELETE FROM clients WHERE user_id = ? AND name = ?"
+    result = sqlitecloud_query(sql, [user_id, name])
+    return result is not None
 
 def get_total_pending(user_id):
-    """Get total pending amount"""
     clients = get_clients(user_id)
     return sum(c.get("amount", 0) for c in clients)
 
 def delete_all_clients(user_id):
-    """Delete all clients for a user"""
-    conn = get_connection()
-    if not conn:
-        return False
-    try:
-        conn.execute("DELETE FROM clients WHERE user_id = ?", [user_id])
-        conn.close()
-        return True
-    except Exception as e:
-        print(f"Delete all error: {e}")
-        return False
+    sql = "DELETE FROM clients WHERE user_id = ?"
+    result = sqlitecloud_query(sql, [user_id])
+    return result is not None
 
 # ============ TELEGRAM FUNCTIONS ============
 def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
@@ -169,7 +130,6 @@ def send_telegram(chat_id, text, parse_mode='Markdown', reply_markup=None):
         print(f"Send error: {e}")
 
 def send_menu(chat_id, text=None):
-    """Send the main menu with buttons (ALWAYS visible)"""
     keyboard = {
         "inline_keyboard": [
             [{"text": "➕ Add Client", "callback_data": "add_client"}],
@@ -371,7 +331,6 @@ def webhook():
         if not chat_id or not text:
             return jsonify({"status": "ok"}), 200
         
-        # Commands
         if text == "/start":
             send_menu(chat_id)
             return jsonify({"status": "ok"}), 200
