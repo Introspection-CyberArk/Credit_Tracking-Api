@@ -15,7 +15,6 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 # ============ SUPABASE HTTP FUNCTIONS ============
 def supabase_request(method, table, params=None, data=None):
-    """Make a direct HTTP request to Supabase REST API"""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -39,7 +38,7 @@ def supabase_request(method, table, params=None, data=None):
         if response.status_code in [200, 201, 204]:
             return response.json() if response.text else []
         else:
-            print(f"Supabase HTTP error: {response.status_code} - {response.text}")
+            print(f"Supabase HTTP error: {response.status_code}")
             return None
     except Exception as e:
         print(f"Supabase request error: {e}")
@@ -57,7 +56,7 @@ def add_client(user_id, name, amount):
             new_amount = client.get("amount", 0) + amount
             params = {"id": f"eq.{client['id']}"}
             data = {"amount": new_amount, "updated_at": datetime.now().isoformat()}
-            result = supabase_request("PATCH", "clients", params=params, data=data)
+            supabase_request("PATCH", "clients", params=params, data=data)
             return "updated", client.get("amount", 0), new_amount
     
     data = {
@@ -67,12 +66,12 @@ def add_client(user_id, name, amount):
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat()
     }
-    result = supabase_request("POST", "clients", data=data)
+    supabase_request("POST", "clients", data=data)
     return "added", 0, amount
 
 def remove_client(user_id, name):
     params = {"user_id": f"eq.{user_id}", "name": f"eq.{name}"}
-    result = supabase_request("DELETE", "clients", params=params)
+    supabase_request("DELETE", "clients", params=params)
     return True
 
 def mark_paid(user_id, name):
@@ -81,7 +80,7 @@ def mark_paid(user_id, name):
         if client.get("name") == name:
             params = {"id": f"eq.{client['id']}"}
             data = {"amount": 0, "updated_at": datetime.now().isoformat()}
-            result = supabase_request("PATCH", "clients", params=params, data=data)
+            supabase_request("PATCH", "clients", params=params, data=data)
             return True
     return False
 
@@ -91,7 +90,7 @@ def get_total_pending(user_id):
 
 def delete_all_clients(user_id):
     params = {"user_id": f"eq.{user_id}"}
-    result = supabase_request("DELETE", "clients", params=params)
+    supabase_request("DELETE", "clients", params=params)
     return True
 
 # ============ TELEGRAM BOT SETUP ============
@@ -424,6 +423,7 @@ def webhook():
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, telegram_app.bot)
+        # Use a synchronous process_update method
         telegram_app.process_update(update)
         return jsonify({"status": "ok"}), 200
     except Exception as e:
@@ -443,7 +443,12 @@ def set_webhook():
     if vercel_url:
         webhook_url = f"https://{vercel_url}/webhook/{BOT_TOKEN}"
         try:
-            telegram_app.bot.set_webhook(url=webhook_url)
+            # Set webhook synchronously
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(telegram_app.bot.set_webhook(url=webhook_url))
+            loop.close()
             print(f"✅ Webhook set to: {webhook_url}")
         except Exception as e:
             print(f"Webhook error: {e}")
